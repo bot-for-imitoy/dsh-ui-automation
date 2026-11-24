@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# test artifacts: logs, JSON reports and throw-away screenshots
+test/out/
+*.log
+
+# compiled test fixtures (rebuild with: make -C test fixtures)
+test/fixtures/panel_qt
+test/fixtures/panel_gtk3
+
+# screenshots produced at runtime (curated ones under screenshots/ are tracked)
+screenshots/ui-*.png
+
+# editor / OS noise
+.DS_Store
+*.swp
+*~
+core

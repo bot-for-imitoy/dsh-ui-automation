@@ -1,0 +1,62 @@
+{
+  "name": "dsh-ui-automation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Headless Xvfb UI automation for DSH: launch, click, type (CJK included), drag, scroll and screenshot GUI apps through AT-SPI with XTEST fallback, reading application state back after every action.",
+  "license": "MIT",
+  "author": "bot-for-imitoy",
+  "homepage": "https://github.com/__OWNER__/dsh-ui-automation#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/__OWNER__/dsh-ui-automation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/__OWNER__/dsh-ui-automation/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "ui-automation",
+    "at-spi",
+    "xdotool",
+    "xvfb",
+    "headless",
+    "gui-testing",
+    "accessibility"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "scripts/ui_shell.sh",
+    "scripts/atspi_driver.py",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "VERIFY.md",
+    "LICENSE",
+    "screenshots",
+    "test/Makefile",
+    "test/integration.mjs",
+    "test/reliability.mjs",
+    "test/smoke.mjs",
+    "test/lib",
+    "test/fixtures"
+  ],
+  "scripts": {
+    "fixtures": "make -C test fixtures",
+    "test": "node test/integration.mjs",
+    "test:reliability": "node test/reliability.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

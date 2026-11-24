@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Headless UI automation",
+    "description": "Launch and drive GUI apps inside isolated headless Xvfb shells: click, double-click, drag, scroll, type (including CJK) and screenshot, using AT-SPI semantics with XTEST fallback. Every action is paced per toolkit and checked by reading the application state back."
+  }
+}
