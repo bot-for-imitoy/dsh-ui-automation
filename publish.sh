@@ -78,7 +78,7 @@ cat > "$ASKPASS" <<'ASKPASS_EOF'
 #!/bin/sh
 case "$1" in
     Username*) printf '%s\n' "${GIT_USER:-x}" ;;
-    *) tr -d '\r\n' < "${GIT_TOKEN_FILE:?}" ;;
+    *) { tr -d '\r\n' < "${GIT_TOKEN_FILE:?}"; printf '\n'; } ;;
 esac
 ASKPASS_EOF
 chmod 700 "$ASKPASS"
