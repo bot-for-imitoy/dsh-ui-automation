@@ -17,3 +17,7 @@ screenshots/ui-*.png
 *.swp
 *~
 core
+
+# publication state (machine-local)
+.publish-state.json
+PUBLISH.md
