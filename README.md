@@ -203,8 +203,9 @@ node test/reliability.mjs    # N attempts per operation (default 30), success ra
 
 The runners read the fixture's counter label after every call, so a PASS means the application
 really changed. See [test/README.md](test/README.md) for optional research probes and
-[VERIFY.md](VERIFY.md) for the recorded matrix (104/104 checks) and reliability run
-(480 operations, 0 failures).
+[VERIFY.md](VERIFY.md) for the recorded matrix (104/104 checks including the optional
+research probes) and reliability run (480 operations, 0 failures). With only the fixtures
+shipped in this repository the default run is 55 checks.
 
 ## Security
 
