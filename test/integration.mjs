@@ -169,11 +169,18 @@ async function runIsolation() {
   checks.check('实例 A 只看到自己的应用', treeA.app.name === 'panel_qt' && treeB.app.name === 'panel_gtk3',
     `A=${treeA.app.name} B=${treeB.app.name}`)
 
+  const beforeA = parseStatus(await statusOf(engine, a))
+  const beforeB = parseStatus(await statusOf(engine, b))
   const clickA = await engine.click(a, { name: 'button' })
-  const statusA = parseStatus(await statusOf(engine, a))
+  const statusA = clickA.ok === true
+    ? await waitForStatus(engine, a, status => status.clicks === beforeA.clicks + 1, 2000)
+    : beforeA
   const clickB = await engine.click(b, { name: 'button' })
-  const statusB = parseStatus(await statusOf(engine, b))
-  checks.check('两个实例可并行操作', clickA.ok && clickB.ok && statusA.clicks === 1 && statusB.clicks === 1,
+  const statusB = clickB.ok === true
+    ? await waitForStatus(engine, b, status => status.clicks === beforeB.clicks + 1, 2000)
+    : beforeB
+  checks.check('两个实例可并行操作', clickA.ok && clickB.ok
+      && statusA.clicks === beforeA.clicks + 1 && statusB.clicks === beforeB.clicks + 1,
     `A.clicks=${statusA.clicks} B.clicks=${statusB.clicks}`)
 
   await engine.close(a.appId)
