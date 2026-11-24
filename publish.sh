@@ -305,40 +305,49 @@ ENTRY_FILE="$ENTRY_DIR/${OWNER}__${REPO_NAME}.yml"
 sed "s/__OWNER__/$OWNER/g" "$ROOT/awesome-entry.yml" > "$ENTRY_FILE"
 ok "wrote $ENTRY_FILE"
 
-# Validate the entry before committing: url must match, description.en must be
-# one sentence ending with a period, and every required field must be present.
+# Validate the entry before committing: url must match, name/category must be
+# present, and description.en must be one physical line ending with a period.
+# Deliberately dependency-free: a tiny line parser instead of requiring PyYAML.
 python3 - "$ENTRY_FILE" "$OWNER" "$REPO_NAME" <<'PY'
+import re
 import sys
 
-try:
-    import yaml
-except ImportError:
-    print("! PyYAML not installed; skipping YAML validation")
-    sys.exit(0)
-
 path, owner, repo = sys.argv[1:4]
-with open(path, encoding="utf-8") as handle:
-    entry = yaml.safe_load(handle)
+text = open(path, encoding="utf-8").read()
 
-expected = f"https://github.com/{owner}/{repo}"
+def scalar(key):
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(.+?)[ \t]*$", text, re.M)
+    value = match.group(1).strip() if match else ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+        value = value[1:-1]
+    return value
+
+url = scalar("url")
+name = scalar("name")
+category = scalar("category")
+match = re.search(r"^[ \t]+en:[ \t]*(.+?)[ \t]*$", text, re.M)
+en = match.group(1).rstrip() if match else ""
+if len(en) >= 2 and en[0] == en[-1] and en[0] in ("\"", "'"):
+    en = en[1:-1]
+
 problems = []
-if entry.get("url") != expected:
-    problems.append(f"url must be {expected}")
-if entry.get("name") != f"{owner}/{repo}":
-    problems.append(f"name must be {owner}/{repo}")
-if not entry.get("category"):
+expected = f"https://github.com/{owner}/{repo}"
+if url != expected:
+    problems.append(f"url must be {expected} (got {url!r})")
+if name != f"{owner}/{repo}":
+    problems.append(f"name must be {owner}/{repo} (got {name!r})")
+if not category:
     problems.append("category is missing")
-en = (entry.get("description") or {}).get("en", "")
-if not en.strip().endswith("."):
+if en == "":
+    problems.append("description.en is missing")
+elif not en.endswith("."):
     problems.append("description.en must end with a period")
-if "\n" in en.strip():
-    problems.append("description.en must be a single line")
 if problems:
-    print("✗ entry validation failed:")
+    print("\u2717 entry validation failed:")
     for problem in problems:
         print(f"  - {problem}")
-    sys.exit(1)
-print("✓ entry validated (url, name, category, single-line description.en)")
+    raise SystemExit(1)
+print("\u2713 entry validated (url, name, category, single-line description.en)")
 PY
 
 # If the list repository ships a generator for its READMEs, run it: the two

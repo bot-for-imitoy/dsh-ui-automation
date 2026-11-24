@@ -2,8 +2,5 @@ url: https://github.com/__OWNER__/dsh-ui-automation
 name: __OWNER__/dsh-ui-automation
 category: tools
 description:
-  en: >-
-    Drives GUI applications inside isolated headless Xvfb sandboxes through
-    AT-SPI with an XTEST fallback, and verifies every click, drag, scroll and
-    key press by reading the application state back.
-  zh: 在隔离的无头 Xvfb 沙盒里，通过 AT-SPI（XTEST 兜底）驱动 GUI 应用，并在每次点击、拖拽、滚动和输入后回读应用状态，确认动作真正生效。
+  en: "Drives GUI applications inside isolated headless Xvfb sandboxes through AT-SPI with an XTEST fallback, and verifies every click, drag, scroll and key press by reading the application state back."
+  zh: "在隔离的无头 Xvfb 沙盒里，通过 AT-SPI（XTEST 兜底）驱动 GUI 应用，并在每次点击、拖拽、滚动和输入后回读应用状态，确认动作真正生效。"
