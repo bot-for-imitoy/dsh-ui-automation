@@ -10,7 +10,8 @@
  *
  *   node test/integration.mjs
  */
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { apps, Checks, createEngine, parseStatus, statusOf, waitForStatus } from './lib/harness.mjs'
 
 const checks = new Checks('integration matrix')
@@ -192,6 +193,7 @@ async function runIsolation() {
 
 async function runLaunchFailures() {
   checks.section('启动失败与超时处理')
+  const runDirsBefore = new Set(readdirSync(tmpdir()).filter(name => name.startsWith('dsh-ui-')))
   const failed = await engine.launch({ command: ['bash', '-lc', 'echo boom >&2; exit 7'] })
   checks.check('应用立即退出 → 结构化失败（带日志）',
     failed.ok === false && failed.code === 'E_APP_EXITED' && typeof failed.logs?.app === 'string',
@@ -206,6 +208,10 @@ async function runLaunchFailures() {
   checks.check('不存在的工作目录 → E_BAD_CWD', badCwd.ok === false && badCwd.code === 'E_BAD_CWD', badCwd.error)
 
   checks.check('失败启动没有留下实例', engine.list().length === 0, `${engine.list().length} 个残留`)
+  const runDirsAfter = readdirSync(tmpdir())
+    .filter(name => name.startsWith('dsh-ui-') && !runDirsBefore.has(name))
+  checks.check('失败启动没有留下运行时目录', runDirsAfter.length === 0,
+    runDirsAfter.length === 0 ? '0 个残留' : runDirsAfter.join(', '))
   results.failures = { exited: failed.code, missing: missing.code, badCwd: badCwd.code }
 }
 
