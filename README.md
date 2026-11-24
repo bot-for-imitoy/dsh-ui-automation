@@ -205,7 +205,7 @@ The runners read the fixture's counter label after every call, so a PASS means t
 really changed. See [test/README.md](test/README.md) for optional research probes and
 [VERIFY.md](VERIFY.md) for the recorded matrix (104/104 checks including the optional
 research probes) and reliability run (480 operations, 0 failures). With only the fixtures
-shipped in this repository the default run is 55 checks.
+shipped in this repository the default run is 56 checks.
 
 ## Security
 

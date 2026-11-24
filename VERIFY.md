@@ -18,7 +18,7 @@
 
 ## 1. 操作矩阵：104/104 通过
 
-`node test/integration.mjs`（覆盖 5 个应用、语义/坐标两条通道、控制台工具入口、隔离与失败路径）。其中 `app_qt / app_gtk3 / app_gtk4` 是当时的调研探针，不在本仓库内；重跑前把 `XVFB_PROBE_DIR` 指向它们所在目录，否则这三个应用会被跳过（只跑仓库内 fixture 时是 55 项）：
+`node test/integration.mjs`（覆盖 5 个应用、语义/坐标两条通道、控制台工具入口、隔离与失败路径）。其中 `app_qt / app_gtk3 / app_gtk4` 是当时的调研探针，不在本仓库内；重跑前把 `XVFB_PROBE_DIR` 指向它们所在目录，否则这三个应用会被跳过（只跑仓库内 fixture 时是 56 项）：
 
 ```
 == Qt6 fixture ==
@@ -149,7 +149,7 @@ GTK4 常报告 (0,0,w,h) 的假坐标；请显式传 x/y。
 ```bash
 cd /path/to/dsh-ui-automation
 make -C test fixtures                # 编译自建 Qt6 / GTK3 面板
-node test/integration.mjs            # 55 项（仓库内 fixture）；设 XVFB_PROBE_DIR 后 104 项
+node test/integration.mjs            # 56 项（仓库内 fixture）；设 XVFB_PROBE_DIR 后 105 项
 node test/reliability.mjs            # 480 次操作（约 141s；探针缺失时只跑 fixture）
 ```
 

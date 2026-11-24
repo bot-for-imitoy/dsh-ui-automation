@@ -18,7 +18,7 @@ From the repository root:
 
 ```bash
 make -C test fixtures        # build the Qt6 and GTK3 control panels
-node test/integration.mjs    # 55 checks: operations, isolation, failures, tools
+node test/integration.mjs    # 56 checks: operations, isolation, failures, tools
 node test/reliability.mjs    # N attempts per operation (default 30 each)
 ```
 
@@ -39,6 +39,6 @@ XVFB_PROBE_DIR=/path/to/probe node test/integration.mjs
 ```
 
 Without the variable those cases are skipped with a one-line notice (the run
-then reports 55 checks instead of 104). The fixtures in `test/fixtures/` cover
+then reports 56 checks instead of 105). The fixtures in `test/fixtures/` cover
 click, double-click, drag, scroll, text input (ASCII + CJK), key chords and
 screenshots for Qt 6 and GTK 3.
