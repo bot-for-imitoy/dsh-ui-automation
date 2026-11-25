@@ -60,7 +60,7 @@ Safety is the point of the design:
   pixel bbox error 0 px, fallback-off refusal) and a **mixed Qt6+GTK3+GTK4 desktop** (18 targets,
   each click lands on its own app, fallback-off drops only GTK4).
 - `test/reliability.mjs`: **450 operations (15 groups × 30), 100% success**, measured end-to-end:
-  screenshot 499–550 ms mean, actions 704–972 ms mean, p95 ≤ 1029 ms. Full table in `VERIFY.md`.
+  screenshot 493–562 ms mean, actions 706–968 ms mean, p95 ≤ 1028 ms. Full table in `VERIFY.md`.
 - Measured accuracy: GTK4 fixture **0 px** (pixel bbox assertion); real libadwaita apps 5–11 px and
   popovers ~8 px per the report — still inside the control's hit area.
 - WorkBuddy (a real Electron app) was numbered through the plugin itself: 40 targets, 1025×710.

@@ -58,23 +58,23 @@ Qt6 / GTK3 的原有 67 项（截图裁剪、编号稳定、点击/双击/拖拽
 
 | fixture | 操作 | 成功 | mean | p50 | p95 | max |
 |---|---|---|---|---|---|---|
-| Qt 6 | screenshot | 30/30 | 531ms | 531ms | 570ms | 622ms |
-| Qt 6 | click | 30/30 | 850ms | 845ms | 922ms | 926ms |
-| Qt 6 | double_click | 30/30 | 868ms | 864ms | 918ms | 981ms |
-| Qt 6 | drag | 30/30 | 868ms | 864ms | 893ms | 895ms |
-| Qt 6 | scroll | 30/30 | 708ms | 708ms | 726ms | 736ms |
-| Qt 6 | type | 30/30 | 914ms | 910ms | 951ms | 978ms |
-| GTK 3 | screenshot | 30/30 | 499ms | 493ms | 553ms | 596ms |
-| GTK 3 | click | 30/30 | 817ms | 815ms | 883ms | 893ms |
-| GTK 3 | double_click | 30/30 | 814ms | 806ms | 873ms | 885ms |
-| GTK 3 | drag | 30/30 | 854ms | 852ms | 882ms | 894ms |
-| GTK 3 | scroll | 30/30 | 704ms | 699ms | 738ms | 741ms |
-| GTK 3 | type | 30/30 | 885ms | 866ms | 949ms | 949ms |
-| GTK 4（回退） | screenshot | 30/30 | 550ms | 540ms | 611ms | 630ms |
-| GTK 4（回退） | click | 30/30 | 848ms | 841ms | 901ms | 910ms |
-| GTK 4（回退） | type | 30/30 | 972ms | 966ms | 1029ms | 1032ms |
+| Qt 6 | screenshot | 30/30 | 539ms | 532ms | 575ms | 591ms |
+| Qt 6 | click | 30/30 | 850ms | 844ms | 919ms | 941ms |
+| Qt 6 | double_click | 30/30 | 880ms | 876ms | 950ms | 958ms |
+| Qt 6 | drag | 30/30 | 883ms | 880ms | 917ms | 956ms |
+| Qt 6 | scroll | 30/30 | 729ms | 726ms | 774ms | 791ms |
+| Qt 6 | type | 30/30 | 934ms | 929ms | 975ms | 1040ms |
+| GTK 3 | screenshot | 30/30 | 493ms | 488ms | 543ms | 550ms |
+| GTK 3 | click | 30/30 | 791ms | 783ms | 831ms | 831ms |
+| GTK 3 | double_click | 30/30 | 824ms | 811ms | 883ms | 889ms |
+| GTK 3 | drag | 30/30 | 856ms | 851ms | 887ms | 907ms |
+| GTK 3 | scroll | 30/30 | 706ms | 701ms | 760ms | 766ms |
+| GTK 3 | type | 30/30 | 883ms | 878ms | 924ms | 940ms |
+| GTK 4（回退） | screenshot | 30/30 | 562ms | 548ms | 659ms | 661ms |
+| GTK 4（回退） | click | 30/30 | 851ms | 844ms | 902ms | 902ms |
+| GTK 4（回退） | type | 30/30 | 968ms | 965ms | 1028ms | 1062ms |
 
-总墙钟 474.9s；所有组 100%。GTK4 的 `screenshot` 比 Qt/GTK3 多约 19–51ms（多一次
+总墙钟 477.6s；所有组 100%。GTK4 的 `screenshot` 比 Qt/GTK3 多约 23–69ms（多一次
 `xdotool search` + `xwininfo`/`xprop`）。
 
 ## 3. GTK4 回退：实现与安全性
