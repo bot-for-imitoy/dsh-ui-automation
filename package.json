@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-automation",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "type": "module",
   "description": "Linux-only numbered-image UI control for DSH: screenshot a display with yellow numbered badges, then click, double-click, scroll, drag and type by index; every action returns the next numbered image.",
   "license": "MIT",

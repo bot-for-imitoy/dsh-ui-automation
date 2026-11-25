@@ -10,6 +10,11 @@
  * throw-away Xvfb, on a desktop it is the real screen. Tools are therefore
  * limited to allow-listed sessions/workspaces by default.
  *
+ * A wrapper that owns a natural-language entry point (`dsh-ui-nl`) can take
+ * the surface over through the published `uiAutomationVisibility` service:
+ * ordinary Sessions then stop seeing the six tools, while subagent Sessions
+ * keep their per-agent grant. See `lib/visibility.js`.
+ *
  * @module dsh-ui-automation
  */
 import { realpathSync } from 'node:fs'
@@ -18,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { Automation } from './lib/automation.js'
 import { loadShipped } from './lib/shipped.js'
 import { createTools } from './lib/tools.js'
+import { UiAutomationVisibility } from './lib/visibility.js'
 
 const schemastery = await loadShipped('@deepseek-ai/schemastery')
 const z = schemastery.default ?? schemastery
@@ -98,14 +104,22 @@ export function apply(ctx, config) {
   const attachments = ctx.get('attachments')
   const automation = new Automation({ getConfig: () => config, pluginDir, log, attachments })
 
+  // Published for wrappers that take the surface over; owned by this plugin
+  // fiber, so unloading the plugin removes it and restores standalone behavior.
+  const visibility = new UiAutomationVisibility()
+  ctx.provide('uiAutomationVisibility', visibility)
+
   const workspaceAllowList = () => {
     const settings = automation.config()
     const entries = settings.allowedWorkspacePaths === '' ? [pluginDir] : splitList(settings.allowedWorkspacePaths)
     return (entries.length > 0 ? entries : [pluginDir]).map(canonicalPath)
   }
 
-  const sessionAllowed = sessionId => {
+  const sessionAllowed = (sessionId, agent) => {
     if (typeof sessionId !== 'string' || sessionId === '') return false
+    // A wrapper owns the natural-language entry point: Sessions it matches must
+    // use it instead of the raw indices. Subagents keep their own grant.
+    if (agent?.session?.header?.origin !== 'subagent' && visibility.suppresses(sessionId, agent)) return false
     const settings = automation.config()
     if (settings.allowAllSessions === true) return true
     if (splitList(settings.enabledSessionIds).includes(sessionId)) return true
@@ -121,13 +135,13 @@ export function apply(ctx, config) {
   }
 
   for (const tool of createTools(automation)) {
-    ctx.tools.register(tool, { when: ({ agent }) => sessionAllowed(agent?.id) })
+    ctx.tools.register(tool, { when: ({ agent }) => sessionAllowed(agent?.id, agent) })
   }
 
   ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const presented = await next()
     const sessionId = context?.agent?.id ?? context?.scope?.id
-    if (!sessionAllowed(sessionId)) return presented
+    if (!sessionAllowed(sessionId, context?.agent)) return presented
     try {
       const sections = (presented.sections || []).filter(section => section.name !== 'ui-automation:numbered')
       sections.splice(Math.min(1, sections.length), 0, { name: 'ui-automation:numbered', text: PROMPT })
@@ -138,5 +152,5 @@ export function apply(ctx, config) {
     }
   })
 
-  log('info', `ready; display=${automation.config().display}; tools limited to ${workspaceAllowList().join(', ')}`)
+  log('info', `ready; display=${automation.config().display}; tools limited to ${workspaceAllowList().join(', ')}; suppression=${visibility.activeKeys().join(',') || 'none'}`)
 }
