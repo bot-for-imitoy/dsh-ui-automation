@@ -1,0 +1,147 @@
+--- a/scripts/numbering.py
++++ b/scripts/numbering.py
+@@ -98,6 +98,20 @@
+         return None
+ 
+ 
++def extents_window(acc):
++    """WINDOW-relative rectangle; the fallback source when SCREEN is broken."""
++    try:
++        comp = acc.get_component()
++        if comp is None:
++            return None
++        e = comp.get_extents(Atspi.CoordType.WINDOW)
++        if e is None:
++            return None
++        return (int(e.x), int(e.y), int(e.width), int(e.height))
++    except Exception:
++        return None
++
++
+ def action_names(acc):
+     try:
+         act = acc.get_action()
+@@ -360,7 +374,100 @@
+ # Collection
+ # --------------------------------------------------------------------------
+ 
+-def collect_app(app, max_depth):
++def x11_window_origin(display, pid, width, height):
++    """Screen origin of the app's X11 toplevel whose client area is width x height.
++
++    GTK4 windows are a single X window per surface, so the client area equals
++    the GtkWindow surface; matching on the AT-SPI GetSize keeps dialogs apart.
++    """
++    if pid <= 0 or width < 8 or height < 8:
++        return None
++    env = dict(os.environ, DISPLAY=display)
++    try:
++        search = subprocess.run(['xdotool', 'search', '--pid', str(pid)],
++                                capture_output=True, text=True, timeout=5, env=env)
++    except Exception:
++        return None
++    best = None
++    for wid in search.stdout.split():
++        try:
++            out = subprocess.run(['xwininfo', '-id', wid], capture_output=True,
++                                 text=True, timeout=5, env=env).stdout
++        except Exception:
++            continue
++        size = re.search(r'Width:\s+(\d+).*?Height:\s+(\d+)', out, re.S)
++        pos = re.search(r'Absolute upper-left X:\s+(-?\d+).*?Absolute upper-left Y:\s+(-?\d+)',
++                        out, re.S)
++        if not (size and pos):
++            continue
++        w, h = int(size.group(1)), int(size.group(2))
++        if (w, h) != (int(width), int(height)):
++            continue
++        area = w * h
++        if best is None or area > best[0]:
++            best = (area, int(pos.group(1)), int(pos.group(2)))
++    if best is None:
++        return None
++    return (best[1], best[2])
++
++
++def fix_screen_rects(app, display, frame, items):
++    """Rebuild screen rectangles for toolkits whose SCREEN extents are broken.
++
++    GTK4's at-spi bridge answers every ATSPI_COORD_TYPE_SCREEN request with
++    (0,0) (gtk_at_spi_translate_coordinates_from_accessible), so
++    Component.GetExtents(SCREEN) collapses to (0,0,w,h) for every widget while
++    GetExtents(WINDOW) stays correct. Detect exactly that shape -- one screen
++    origin, several window origins -- and rebuild each screen rectangle as
++    (X11 toplevel origin + WINDOW rectangle).
++    """
++    if len(items) < 2:
++        return frame
++    screen_pos = {(it['rect'][0], it['rect'][1]) for it in items}
++    window_pos = {(it['windowRect'][0], it['windowRect'][1])
++                  for it in items if len(it['windowRect']) == 4}
++    if len(screen_pos) > 1 or len(window_pos) <= 1:
++        return frame
++    try:
++        pid = int(app.get_process_id() or 0)
++    except Exception:
++        return frame
++    frames = {}
++    for acc, depth, path in walk(app, max_depth=2):
++        if depth != 1:
++            continue
++        rect = extents(acc)
++        win = extents_window(acc)
++        if rect is not None and win is not None:
++            frames[path] = (rect, win)
++    # dx/dy anchors the frame's own WINDOW rectangle on its X11 client window,
++    # so a frame whose bounds are not (0,0) still maps exactly.
++    deltas = {}
++    for key, (rect, win) in frames.items():
++        origin = x11_window_origin(display, pid, rect[2], rect[3])
++        if origin is not None:
++            deltas[key] = (origin[0] - win[0], origin[1] - win[1])
++    if not deltas:
++        return frame
++    for it in items:
++        delta = deltas.get(it['frameKey'])
++        if delta is None and len(deltas) == 1:
++            delta = next(iter(deltas.values()))
++        if delta is None or len(it['windowRect']) != 4:
++            continue
++        wx, wy, ww, wh = it['windowRect']
++        it['rect'] = [wx + delta[0], wy + delta[1], ww, wh]
++        it['rectSource'] = 'x11-origin+window'
++    fixed = frame
++    for key, (rect, win) in frames.items():
++        if tuple(rect) == tuple(frame) and key in deltas:
++            fixed = (win[0] + deltas[key][0], win[1] + deltas[key][1],
++                     frame[2], frame[3])
++            break
++    return fixed
++
++
++def collect_app(app, max_depth, display=':0'):
+     frame = frame_rect(app)
+     if frame is None:
+         return None, []
+@@ -386,8 +493,12 @@
+             'states': sorted(states), 'path': path, 'depth': depth,
+             'kind': 'region' if (is_region and not actionable) else 'control',
+             'appName': (app.get_name() or ''), 'appPid': int(app.get_process_id() or 0),
++            'windowRect': list(extents_window(acc) or ()),
++            'frameKey': path.split('/')[0] if path else '',
+         })
+ 
++    frame = fix_screen_rects(app, display, frame, raw)
++
+     # exact duplicates (same role/label/rect exposed twice by a toolkit)
+     seen = {}
+     deduped = []
+@@ -504,7 +615,7 @@
+         if app_pid == os.getpid() or app_name in ('at-spi2-registryd',):
+             continue
+         try:
+-            frame, info = collect_app(app, args.max_depth)
++            frame, info = collect_app(app, args.max_depth, args.display)
+         except Exception:
+             continue
+         if frame is None:
