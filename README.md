@@ -1,4 +1,7 @@
-# dsh-ui-automation
+# dsh-ui-automation — Linux headless UI automation for DeepSeek Harness
+
+**Linux only.** The plugin drives X11 applications inside Xvfb through AT-SPI2 and XTEST; macOS
+and Windows are not supported and there is no Wayland path yet.
 
 Headless UI automation for [DeepSeek Harness](https://github.com/deepseek-ai): launch a GUI
 application inside a private Xvfb shell and drive it like a user — click, double-click, drag,
@@ -36,10 +39,19 @@ gives DSH a small, isolated lab for that:
 |---|---|---|
 | ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) | ![GTK4](screenshots/gtk4-panel.png) |
 
-Each window shows its own counter line (`clicks=… dclicks=… drags=… wheel=… text='…'`). The
-screenshots are the raw `ui_screenshot` output; the counters match the values read back over
-AT-SPI during the run, which is the point: success is measured on the application, not on the
-driver's return value.
+| WorkBuddy (Electron) read over AT-SPI |
+|---|
+| ![WorkBuddy numbered](screenshots/workbuddy-numbered.png) |
+
+Each window shows its own counter line (`clicks=… dclicks=… drags=… wheel=… text='…'`); the
+counters match the values read back over AT-SPI during the run, which is the point: success is
+measured on the application, not on the driver's return value. Screenshots are `ui_screenshot`
+output cropped to the application window (the Xvfb root is 1024×768, the window is smaller).
+
+The WorkBuddy capture is not a test fixture: it is the tool driving a real Electron
+application. The yellow badges are drawn by a separate element-numbering prototype from the same
+project to show *which nodes the accessibility tree exposes*; the plugin itself never renders or
+reads badges — it addresses those nodes by name, role and path (see **Addressing** below).
 
 ## Install
 

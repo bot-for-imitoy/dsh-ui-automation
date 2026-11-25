@@ -1,10 +1,11 @@
-Title: Add dsh-ui-automation — headless Xvfb UI automation with state readback
+Title: Add dsh-ui-automation — Linux headless Xvfb UI automation with state readback
 
 Body:
 
 ## What it is
 
-`dsh-ui-automation` gives DSH a disposable GUI lab. Each `ui_launch` starts the
+`dsh-ui-automation` gives DSH a disposable GUI lab on Linux (X11/Xvfb + AT-SPI2; macOS and
+Windows are not supported). Each `ui_launch` starts the
 application in a private Xvfb display, a private D-Bus session and its own
 `XDG_RUNTIME_DIR`; a bundled AT-SPI driver then exposes ten `ui_*` tools:
 
@@ -58,10 +59,13 @@ Screenshots from the verification run:
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/qt6-panel.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk3-panel.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/workbuddy-numbered.png
+  (a real Electron application read over AT-SPI; the yellow badges come from a separate
+  element-numbering prototype and only mark which nodes are addressable)
 
 ## Checklist
 
-- [x] public repository, MIT licensed
+- [x] public repository, MIT licensed, Linux only (documented in the README)
 - [x] `dsh.bundle.patch` manifest (`cordis.patch.yml`)
 - [x] `dsh-plugin` topic
 - [x] installation documented for both `github:owner/repo` and a local checkout

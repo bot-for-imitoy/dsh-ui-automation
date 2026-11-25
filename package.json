@@ -2,7 +2,7 @@
   "name": "dsh-ui-automation",
   "version": "1.0.0",
   "type": "module",
-  "description": "Headless Xvfb UI automation for DSH: launch, click, type (CJK included), drag, scroll and screenshot GUI apps through AT-SPI with XTEST fallback, reading application state back after every action.",
+  "description": "Linux-only headless Xvfb UI automation for DSH: launch, click, type (CJK included), drag, scroll and screenshot GUI apps through AT-SPI with XTEST fallback, reading application state back after every action.",
   "license": "MIT",
   "author": "bot-for-imitoy",
   "homepage": "https://github.com/bot-for-imitoy/dsh-ui-automation#readme",
@@ -22,7 +22,8 @@
     "xvfb",
     "headless",
     "gui-testing",
-    "accessibility"
+    "accessibility",
+    "linux"
   ],
   "exports": {
     ".": "./index.js",

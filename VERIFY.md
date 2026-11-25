@@ -3,6 +3,7 @@
 > 验证时间：2026-11-24
 > 环境：Arch Linux / Xvfb 21.1.26 / at-spi2-core 2.62.1 / Qt 6.12.0 / GTK 3.24.52 / GTK 4.24.1 / xdotool 4.0 / ffmpeg / Node v26.13.1
 > 所有数字都来自本机实际运行，不是文档推断。驱动脚本：`test/integration.mjs`、`test/reliability.mjs`（源码在本目录，可重跑）。
+> **平台：仅 Linux**（X11/Xvfb + AT-SPI2）；截图在 `screenshots/` 里是 `ui_screenshot` 原始输出按窗口裁剪后的版本（原始图是 1024×768 根窗口，四周有黑色桌面）。
 
 ## 被测对象
 

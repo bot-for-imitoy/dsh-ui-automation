@@ -1,4 +1,7 @@
-# dsh-ui-automation
+# dsh-ui-automation — Linux 版无头 UI 自动化（DeepSeek Harness 插件）
+
+**仅支持 Linux。** 插件通过 AT-SPI2 与 XTEST 驱动 Xvfb 里的 X11 应用；macOS 与 Windows 不支持，
+目前也没有 Wayland 路径。
 
 在**隔离的无头 Xvfb 壳**里启动并操作 GUI 应用：点击、双击、拖拽、滚动、键盘输入（含中文）、
 枚举无障碍树、截图。每次动作都会**回读应用状态**，`ok: true` 不等于“真的生效”。
@@ -8,6 +11,19 @@
 > `XDG_RUNTIME_DIR`。
 
 ![Qt6 面板：clicks=1 dclicks=1 drags=2 dragdist=440 wheel=-240 text='中文键盘输入'](screenshots/qt6-panel.png)
+
+### 截图
+
+| Qt 6 测试面板 | GTK 3 测试面板 | GTK 4 探针 | WorkBuddy（Electron，真实应用） |
+|---|---|---|---|
+| ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) | ![GTK4](screenshots/gtk4-panel.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
+
+截图都是 `ui_screenshot` 的原始输出，按窗口裁掉了四周的黑色桌面（Xvfb 根窗口 1024×768，窗口更小）。
+每张图底部的计数行与应用里读回的值一致——这正是重点：成功与否以应用状态为准，不以驱动返回值为准。
+
+WorkBuddy 那张不是测试夹具，是插件在驱动一个真实的 Electron 应用；图中的黄色编号由同项目的
+"元素编号"原型叠加，用来显示无障碍树里**有哪些节点可寻址**。插件本身不画编号、也不读编号——
+它按名字 / 角色 / 路径寻址这些节点（见下文"定位方式"）。
 
 ## 安装
 
