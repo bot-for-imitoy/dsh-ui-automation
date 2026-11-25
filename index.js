@@ -33,7 +33,9 @@ export const Config = z.object({
   display: z.string().default('').volatile()
     .description('目标 X display，例如 ":0" 或 ":107"。留空时使用 process.env.DISPLAY（再缺省为 ":0"）。'),
   dbusAddress: z.string().default('').volatile()
-    .description('可选：AT-SPI 所在的 D-Bus 地址。留空表示继承 Host 环境变量；CI 私总线时填写。'),
+    .description('可选：AT-SPI 所在的 session D-Bus 地址。留空表示继承 Host 环境变量；CI 私总线时填写。'),
+  atspiBusAddress: z.string().default('').volatile()
+    .description('可选：私有 a11y 总线地址（AT_SPI_BUS_ADDRESS）。留空表示继承 Host 环境；测试/CI 使用独立 a11y 总线时填写。'),
   screenshotDir: z.string().default('').volatile()
     .description('标号图片与 sidecar JSON 的目录；留空表示插件目录下的 screenshots/。'),
   fontFile: z.string().default('/usr/share/fonts/TTF/Hack-Bold.ttf').volatile()
@@ -50,6 +52,8 @@ export const Config = z.object({
     .description('每次操作后等待多少秒再重新截图，0–30；工具参数可覆盖。'),
   keepImages: z.number().default(15).volatile()
     .description('保留最近多少组生成的标号图片（PNG + sidecar），1–500；精选截图不受影响。'),
+  gtk4OriginFallback: z.boolean().default(true).volatile()
+    .description('GTK4 的 AT-SPI SCREEN 坐标恒为 (0,0)；开启时用 X11 顶层窗口原点 + WINDOW 矩形修复（需要 xwininfo）。关闭后这些应用会被明确拒绝，而不是按 (0,0) 编号。'),
   attachImage: z.boolean().default(true).volatile()
     .description('是否把 PNG 保存为 attachment 并作为图片块放进工具结果；失败时退回 imagePath。'),
   enabledSessionIds: z.string().default('').volatile()

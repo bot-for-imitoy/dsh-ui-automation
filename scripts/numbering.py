@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -96,6 +97,117 @@ def extents(acc):
         return (int(e.x), int(e.y), int(e.width), int(e.height))
     except Exception:
         return None
+
+
+def extents_window(acc):
+    """WINDOW-relative rectangle; the fallback source when SCREEN is broken."""
+    try:
+        comp = acc.get_component()
+        if comp is None:
+            return None
+        e = comp.get_extents(Atspi.CoordType.WINDOW)
+        if e is None:
+            return None
+        return (int(e.x), int(e.y), int(e.width), int(e.height))
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------
+# X11 helpers for the GTK4 origin fallback
+#
+# GTK4's AT-SPI bridge hardcodes SCREEN coordinates to (0,0)
+# (gtk_at_spi_translate_coordinates_to_accessible in gtk-4.x), while
+# GetExtents(WINDOW) is correct. A GTK4 surface is one X11 toplevel, so
+#   screen = X11 content origin + WINDOW extents
+# for every widget of that application. Everything below is only consulted for
+# applications that match that broken shape; GTK3/Qt never reach it.
+# --------------------------------------------------------------------------
+
+def _run_x11(args, display, timeout=5):
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                          env=dict(os.environ, DISPLAY=display))
+
+
+def _parse_xwininfo(text):
+    size = re.search(r'Width:\s+(\d+).*?Height:\s+(\d+)', text, re.S)
+    pos = re.search(r'Absolute upper-left X:\s+(-?\d+).*?Absolute upper-left Y:\s+(-?\d+)', text, re.S)
+    if size is None or pos is None:
+        return None
+    return (int(pos.group(1)), int(pos.group(2)), int(size.group(1)), int(size.group(2)))
+
+
+def _frame_extents(wid, display):
+    """_GTK_FRAME_EXTENTS (left, right, top, bottom), or zeros.
+
+    GTK CSD apps may advertise shadow/extent margins so the WM can place the
+    logical frame. When present, the X window origin is shadow-inclusive and
+    the interactive content starts at (left, top) inside it.
+    """
+    try:
+        out = _run_x11(['xprop', '-id', str(wid), '_GTK_FRAME_EXTENTS'], display).stdout
+    except Exception:
+        return (0, 0, 0, 0)
+    match = re.search(r'_GTK_FRAME_EXTENTS.*?=\s*([-\d, ]+)', out)
+    if match is None:
+        return (0, 0, 0, 0)
+    values = [int(part) for part in re.findall(r'-?\d+', match.group(1))]
+    return tuple(values) if len(values) == 4 else (0, 0, 0, 0)
+
+
+def x11_windows(display, pid):
+    """All usable top-level X windows of one process, with frame extents.
+
+    Returns None when xdotool/xwininfo are unavailable, so the caller can tell
+    "no window matched" (E_NO_X11_ORIGIN) apart from "missing x11-utils".
+    """
+    if not shutil.which('xdotool') or not shutil.which('xwininfo'):
+        return None
+    try:
+        found = _run_x11(['xdotool', 'search', '--pid', str(int(pid))], display)
+    except Exception:
+        return None
+    windows = []
+    for wid in found.stdout.split():
+        try:
+            geometry = _parse_xwininfo(_run_x11(['xwininfo', '-id', wid], display).stdout)
+        except Exception:
+            continue
+        if geometry is None:
+            continue
+        x, y, width, height = geometry
+        if width < 8 or height < 8 or width > 100000:
+            continue
+        windows.append({
+            'id': wid, 'x': x, 'y': y, 'width': width, 'height': height,
+            'frameExtents': _frame_extents(wid, display),
+        })
+    return windows
+
+
+def match_window_origin(windows, frame_width, frame_height):
+    """Content origin of the X11 toplevel that corresponds to one AT-SPI frame.
+
+    Matching is by pid (xdotool search --pid) plus a size comparison: either
+    the X window equals the AT-SPI frame size, or it equals the frame size plus
+    _GTK_FRAME_EXTENTS (shadow-inclusive window). The returned origin is the
+    interactive content origin: X + (left, top) when extents are advertised.
+    """
+    best = None
+    for window in windows:
+        left, right, top, bottom = window['frameExtents']
+        exact = (window['width'], window['height']) == (frame_width, frame_height)
+        adjusted = (window['width'] - left - right, window['height'] - top - bottom) == (frame_width, frame_height)
+        if not exact and not adjusted:
+            continue
+        has_extents = (left, right, top, bottom) != (0, 0, 0, 0)
+        content_x = window['x'] + left if has_extents else window['x']
+        content_y = window['y'] + top if has_extents else window['y']
+        score = (0 if exact else 1, -window['width'] * window['height'])
+        candidate = (score, content_x, content_y, window['id'], 'exact' if exact else 'frame-extents')
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+    return None if best is None else best[1:]
 
 
 def action_names(acc):
@@ -360,10 +472,148 @@ def place_badges(items, frame):
 # Collection
 # --------------------------------------------------------------------------
 
-def collect_app(app, max_depth):
+def resolve_app_geometry(app, display, raw, frames, frame, enabled):
+    """Repair or drop one application's rectangles.
+
+    Detection is per application and deliberately narrow: every SCREEN origin is
+    the same value (GTK4 always (0,0)), WINDOW origins differ, and the sizes
+    differ too. GTK3/Qt report real SCREEN origins, so they never match.
+
+    Failure never falls back to the broken rectangles: the application's targets
+    are dropped and a structured warning is returned. That is the important
+    safety property -- a GTK4 target must never be silently clickable at (0,0).
+    """
+    try:
+        pid = int(app.get_process_id() or 0)
+    except Exception:
+        pid = 0
+    name = app.get_name() or ''
+    positions = {(it['rect'][0], it['rect'][1]) for it in raw}
+    window_positions = {(it['windowRect'][0], it['windowRect'][1])
+                        for it in raw if len(it['windowRect']) == 4}
+    # One SCREEN origin + several WINDOW origins is already conclusive: the
+    # SCREEN coordinate is broken for this app. The size variation the report
+    # describes is typical for GTK4 but not required (a GTK4 dialog whose
+    # controls happen to share one size must not silently number at (0,0)).
+    suspect = (len(raw) >= 2 and len(positions) == 1
+               and len(window_positions) > 1)
+    base = {'app': name, 'pid': pid}
+    if not suspect:
+        return {'mode': 'none', **base}, [], raw, frame
+
+    def dropped(code, message, extra=None, crop_frame=None):
+        warning = {'code': code, 'app': name, 'pid': pid,
+                   'geometryTrusted': False, 'message': message}
+        if extra:
+            warning.update(extra)
+        geometry = {'mode': 'dropped', 'code': code, **base,
+                    'droppedTargets': len(raw), 'geometryTrusted': False}
+        if crop_frame is not None:
+            # Keep the evidence screenshot cropped to the app even though its
+            # targets are dropped -- a refused GTK4 app must still produce a
+            # readable frame, not a full-black root capture.
+            geometry['cropDerived'] = True
+            return geometry, [warning], [], crop_frame
+        return geometry, [warning], [], frame
+
+    def x11_crop_frame():
+        windows = x11_windows(display, pid)
+        if not windows:
+            return None
+        rects = []
+        for key, (screen_rect, _window_rect) in frames.items():
+            match = match_window_origin(windows, screen_rect[2], screen_rect[3])
+            if match is not None:
+                rects.append((match[0], match[1], screen_rect[2], screen_rect[3]))
+        return union(rects) if rects else None
+
+    if not enabled:
+        return dropped('E_GTK4_FALLBACK_DISABLED',
+                       'SCREEN extents look like the GTK4 bug (all origins identical) and '
+                       'gtk4OriginFallback is disabled; the application was not numbered.',
+                       {'hint': 'enable the gtk4OriginFallback setting to use the X11-origin fallback'},
+                       crop_frame=x11_crop_frame())
+
+    windows = x11_windows(display, pid)
+    if windows is None:
+        return dropped('E_NO_X11_UTILS',
+                       'xdotool/xwininfo are required for the GTK4 origin fallback but were not found.',
+                       {'hint': 'install x11-utils (xwininfo/xprop) and xdotool'})
+    if not windows:
+        return dropped('E_NO_X11_WINDOW',
+                       'no X11 window matched the application pid; cannot compute a screen origin.',
+                       {'hint': 'the application may be Wayland-native or its window is unmapped'})
+
+    deltas = {}
+    matched = []
+    for key, (screen_rect, window_rect) in frames.items():
+        match = match_window_origin(windows, screen_rect[2], screen_rect[3])
+        if match is None:
+            continue
+        content_x, content_y, window_id, how = match
+        deltas[key] = (content_x - window_rect[0], content_y - window_rect[1], window_id, how)
+        matched.append({'frame': key, 'windowId': window_id, 'match': how})
+
+    if not deltas:
+        return dropped('E_NO_X11_ORIGIN',
+                       'could not match any X11 toplevel to the AT-SPI frame size; '
+                       'the application was not numbered.',
+                       {'hint': 'check that the window is mapped on the configured display'})
+
+    fixed = []
+    dropped_targets = 0
+    for it in raw:
+        delta = deltas.get(it['frameKey'])
+        if delta is None and len(deltas) == 1:
+            delta = next(iter(deltas.values()))
+        if delta is None or len(it['windowRect']) != 4:
+            dropped_targets += 1
+            continue
+        wx, wy, ww, wh = it['windowRect']
+        it['rect'] = [wx + delta[0], wy + delta[1], ww, wh]
+        it['rectSource'] = 'x11-origin+window'
+        it['x11WindowId'] = delta[2]
+        fixed.append(it)
+
+    fixed_frames = []
+    for key, delta in deltas.items():
+        screen_rect, window_rect = frames[key]
+        fixed_frames.append((delta[0] + window_rect[0], delta[1] + window_rect[1],
+                             screen_rect[2], screen_rect[3]))
+    fixed_frame = union(fixed_frames) if fixed_frames else frame
+    warnings = []
+    if dropped_targets > 0:
+        warnings.append({
+            'code': 'E_PARTIAL_GEOMETRY', 'app': name, 'pid': pid,
+            'geometryTrusted': False,
+            'message': '%d target(s) belong to a frame without an X11 origin and were dropped.'
+                       % dropped_targets,
+        })
+    geometry = {
+        'mode': 'fixed', **base,
+        'rectSource': 'x11-origin+window',
+        'fixedTargets': len(fixed),
+        'droppedTargets': dropped_targets,
+        'windows': matched,
+        'geometryTrusted': dropped_targets == 0,
+    }
+    return geometry, warnings, fixed, fixed_frame
+
+
+def collect_app(app, max_depth, display=':0', gtk4_origin_fallback=True):
     frame = frame_rect(app)
     if frame is None:
-        return None, []
+        return None, {'nodes': 0, 'raw': 0, 'kept': [], 'dupes': 0,
+                      'geometry': {'mode': 'none'}, 'warnings': []}
+    frames = {}
+    for acc, depth, path in walk(app, max_depth=2):
+        if depth != 1:
+            continue
+        screen_rect = extents(acc)
+        window_rect = extents_window(acc)
+        if screen_rect is not None and window_rect is not None and screen_rect[2] > 40 and screen_rect[3] > 40:
+            frames[path] = (screen_rect, window_rect)
+
     raw = []
     total = 0
     for acc, depth, path in walk(app, max_depth=max_depth):
@@ -386,7 +636,16 @@ def collect_app(app, max_depth):
             'states': sorted(states), 'path': path, 'depth': depth,
             'kind': 'region' if (is_region and not actionable) else 'control',
             'appName': (app.get_name() or ''), 'appPid': int(app.get_process_id() or 0),
+            'windowRect': list(extents_window(acc) or ()),
+            'frameKey': path.split('/')[0] if path else '',
+            'rectSource': 'at-spi-screen',
         })
+
+    geometry = {'mode': 'none'}
+    warnings = []
+    if raw:
+        geometry, warnings, raw, frame = resolve_app_geometry(
+            app, display, raw, frames, frame, gtk4_origin_fallback)
 
     # exact duplicates (same role/label/rect exposed twice by a toolkit)
     seen = {}
@@ -447,7 +706,8 @@ def collect_app(app, max_depth):
             kept.append(it)
 
     return frame, {'nodes': total, 'raw': len(raw), 'kept': kept,
-                   'dupes': len(raw) - len(deduped)}
+                   'dupes': len(raw) - len(deduped),
+                   'geometry': geometry, 'warnings': warnings}
 
 
 def screen_size(display):
@@ -495,6 +755,10 @@ def cmd_shot(args):
     app_frames = []
     total_nodes = 0
     exact_dupes = 0
+    app_geometries = []
+    geo_warnings = []
+    fallback = {'detected': 0, 'fixed': 0, 'disabled': 0, 'failed': 0,
+                'fixedTargets': 0, 'droppedTargets': 0}
     for app in desktop_apps():
         try:
             app_name = (app.get_name() or '')
@@ -504,16 +768,35 @@ def cmd_shot(args):
         if app_pid == os.getpid() or app_name in ('at-spi2-registryd',):
             continue
         try:
-            frame, info = collect_app(app, args.max_depth)
+            frame, info = collect_app(app, args.max_depth, args.display,
+                                      bool(args.gtk4_origin_fallback))
         except Exception:
             continue
         if frame is None:
             continue
         total_nodes += info['nodes']
         exact_dupes += info['dupes']
+        geometry = info.get('geometry') or {'mode': 'none'}
+        if geometry.get('mode') != 'none':
+            app_geometries.append(geometry)
+            if geometry.get('mode') == 'fixed':
+                fallback['detected'] += 1
+                fallback['fixed'] += 1
+                fallback['fixedTargets'] += geometry.get('fixedTargets', 0)
+                fallback['droppedTargets'] += geometry.get('droppedTargets', 0)
+            elif geometry.get('mode') == 'dropped':
+                fallback['detected'] += 1
+                if geometry.get('code') == 'E_GTK4_FALLBACK_DISABLED':
+                    fallback['disabled'] += 1
+                else:
+                    fallback['failed'] += 1
+                fallback['droppedTargets'] += geometry.get('droppedTargets', 0)
+        for warning in info.get('warnings') or []:
+            geo_warnings.append(warning)
         if not [r for r in [frame] if r[2] > 40 and r[3] > 40]:
             continue
-        app_frames.append(frame)
+        if info['kept'] or geometry.get('cropDerived'):
+            app_frames.append(frame)
         for it in info['kept']:
             per_app.append(it)
 
@@ -528,10 +811,13 @@ def cmd_shot(args):
         seen[key] = it
         targets.append(it)
 
-    # geometry sanity: GTK4 reports (0,0,w,h) for every widget, so a
-    # coordinate contract must not pretend those targets are clickable.
+    # Safety net after the per-app repair: if every remaining target still
+    # shares one origin (>=3 of them), nothing on this screen is clickable by
+    # coordinate. Never draw badges or accept indices in that state.
     positions = {(t['rect'][0], t['rect'][1]) for t in targets}
-    geometry_trusted = not (len(targets) >= 3 and len(positions) <= 1)
+    global_untrusted = len(targets) >= 3 and len(positions) <= 1
+    geometry_trusted = not geo_warnings and not global_untrusted
+    can_draw = bool(targets) and not global_untrusted
 
     targets.sort(key=lambda t: (t['rect'][1], t['rect'][0]))
     targets = sort_reading_order(targets)
@@ -563,7 +849,7 @@ def cmd_shot(args):
         it['center'] = [x + w // 2, y + h // 2]
 
     # badges in image coordinates
-    if geometry_trusted:
+    if can_draw:
         badge_items = []
         for it in targets:
             badge_items.append({'rect': it['imageRect'], 'index': it['index']})
@@ -581,7 +867,7 @@ def cmd_shot(args):
 
     font = identify(args.font)
     capture_failed = None
-    if geometry_trusted:
+    if can_draw:
         filters = []
         for it in targets:
             x, y, w, h = it['imageRect']
@@ -617,6 +903,14 @@ def cmd_shot(args):
         'imagePath': png_path,
         'image': {'width': cw if not capture_failed else 0, 'height': ch if not capture_failed else 0},
         'geometryTrusted': geometry_trusted,
+        'geometry': {
+            'trusted': geometry_trusted,
+            'globalCollapse': global_untrusted,
+            'fallback': fallback,
+            'apps': app_geometries,
+            'warnings': geo_warnings,
+        },
+        'warnings': geo_warnings,
         'targets': targets,
         'stats': {
             'totalNodes': total_nodes,
@@ -625,6 +919,7 @@ def cmd_shot(args):
             'targets': len(targets),
             'distinctPositions': len(positions),
             'apps': len(desktop_apps()),
+            'gtk4Fallback': fallback,
         },
     }
     with open(json_path, 'w') as handle:
@@ -633,10 +928,15 @@ def cmd_shot(args):
 
     if capture_failed is not None:
         code, error = 'E_CAPTURE', capture_failed
-    elif not geometry_trusted:
+    elif not targets:
         code = 'E_NO_GEOMETRY'
-        error = ('AT-SPI reports identical (x,y) rectangles for every target; '
-                 'this toolkit (typically GTK4) cannot be numbered for a coordinate contract.')
+        reasons = '; '.join(warning['message'] for warning in geo_warnings)
+        error = (reasons or
+                 'no clickable target with a trustworthy screen rectangle is left on this display.')
+    elif global_untrusted:
+        code = 'E_NO_GEOMETRY'
+        error = ('AT-SPI still reports identical (x,y) rectangles for every target; '
+                 'no numbered image is produced because coordinate clicks would be wrong.')
     else:
         code, error = None, None
     result = {
@@ -651,6 +951,8 @@ def cmd_shot(args):
         'crop': sidecar['crop'],
         'image': sidecar['image'],
         'geometryTrusted': geometry_trusted,
+        'geometry': sidecar['geometry'],
+        'warnings': geo_warnings,
         'targets': targets,
         'stats': sidecar['stats'],
         'elapsedMs': round((time.time() - started) * 1000, 1),
@@ -774,6 +1076,9 @@ def main():
     parser.add_argument('--max-targets', type=int, default=60)
     parser.add_argument('--padding', type=int, default=0)
     parser.add_argument('--no-crop', action='store_true')
+    parser.add_argument('--gtk4-origin-fallback', dest='gtk4_origin_fallback',
+                        type=int, choices=(0, 1), default=1,
+                        help='repair GTK4 SCREEN extents from the X11 origin + WINDOW rects (default 1)')
     parser.add_argument('--app-pid', type=int, default=0)
     parser.add_argument('--node-path', default='')
     parser.add_argument('--text', default='')

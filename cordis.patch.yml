@@ -4,6 +4,7 @@
       config:
         display: ''
         dbusAddress: ''
+        atspiBusAddress: ''
         screenshotDir: ''
         fontFile: '/usr/share/fonts/TTF/Hack-Bold.ttf'
         maxDepth: 24
@@ -12,6 +13,7 @@
         crop: true
         afterSeconds: 1
         keepImages: 15
+        gtk4OriginFallback: true
         attachImage: true
         enabledSessionIds: ''
         allowedWorkspacePaths: ''
