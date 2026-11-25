@@ -1,22 +1,22 @@
 /**
- * reliability.mjs — repeat each operation N times and report success rate and
- * latency, reading the application's own counter after every single call.
+ * reliability.mjs — 30 attempts per operation, each asserted against the
+ * fixture's own counter label.
  *
- *   node test/reliability.mjs            # N=30 per operation
+ * Every action returns the next numbered image, so the measured latency is the
+ * end-to-end cost of "act → wait afterSeconds → enumerate → crop → badge → PNG".
+ *
+ *   node test/reliability.mjs
  *   UI_RELIABILITY_N=50 node test/reliability.mjs
- *
- * Covers Qt6 and GTK3 fixtures (click, double-click, drag, scroll, type) plus
- * the research probes: 30 semantic clicks on app_qt / app_gtk3 / app_gtk4 and
- * 30 CJK text writes on app_gtk4, which is where the GTK4 300ms debounce floor
- * matters most.
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { apps, createEngine, parseStatus, statusOf, waitForStatus } from './lib/harness.mjs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { Automation } from '../lib/automation.js'
+import { fixtureDir, pluginDir, TestDisplay } from './lib/env.mjs'
+import { indexOf, parseStatus } from './lib/checks.mjs'
 
 const N = Math.max(1, Number(process.env.UI_RELIABILITY_N) || 30)
-const engine = createEngine()
-const results = []
 const started = Date.now()
+const results = []
 
 function percent(sorted, p) {
   if (sorted.length === 0) return 0
@@ -59,134 +59,157 @@ function report(def, operation, rows) {
   for (const detail of record.failuresDetail) console.log(`      FAIL: ${detail}`)
 }
 
-async function launch(def) {
-  const launched = await engine.launch({ command: def.command })
-  if (launched.ok !== true) throw new Error(`${def.key} launch failed: ${launched.error}`)
-  return engine.instances.get(launched.appId)
+function statusOf(env, appName) {
+  const value = env.status(appName)
+  if (value.ok !== true) throw new Error(value.error)
+  return parseStatus(value.status)
 }
 
-async function runApp(def) {
+async function waitForStatus(env, appName, predicate, timeoutMs = 2500) {
+  const deadline = Date.now() + timeoutMs
+  let last
+  while (Date.now() < deadline) {
+    last = statusOf(env, appName)
+    if (predicate(last)) return last
+    await new Promise(resolve => setTimeout(resolve, 60))
+  }
+  return last
+}
+
+async function runFixture(def) {
   console.log(`\n== ${def.label} (${def.toolkit}) ==`)
-  const instance = await launch(def)
+  const env = await TestDisplay.start()
+  const app = env.launch([def.command])
+  const automation = new Automation({ getConfig: () => env.config(), pluginDir })
   try {
-    // --- click ---------------------------------------------------------
-    const clickRows = []
-    for (let index = 0; index < N; index += 1) {
-      const before = parseStatus(await statusOf(engine, instance))
-      const result = await engine.click(instance, { name: def.buttonName })
-      let now = before
-      if (result.ok === true) {
-        now = await waitForStatus(engine, instance, status => status.clicks === before.clicks + 1, 1500)
-      }
-      const ok = result.ok === true && now.clicks === before.clicks + 1
-      clickRows.push({
+    await env.waitForApp({ pid: app.pid })
+    const initial = await automation.screenshot()
+    if (initial.ok !== true) throw new Error(`initial screenshot failed: ${initial.code} ${initial.error}`)
+    const initialBy = name => indexOf(initial.targets, name)
+
+    // ---- screenshot ---------------------------------------------------
+    const shotRows = []
+    for (let i = 0; i < N; i += 1) {
+      const shot = await automation.screenshot()
+      const ok = shot.ok === true && shot.geometryTrusted === true && shot.targetCount === initial.targetCount
+      shotRows.push({
         ok,
-        ms: result.elapsedMs ?? 0,
-        detail: `clicks ${before.clicks} → ${now.clicks} (${result.code || result.channel}, changed=${result.effect?.changed})`,
+        ms: shot.elapsedMs ?? 0,
+        detail: `${shot.code || 'ok'} targets=${shot.targetCount} ${shot.image?.width}×${shot.image?.height}`,
       })
+    }
+    report(def, 'screenshot', shotRows)
+
+    // ---- click --------------------------------------------------------
+    const clickRows = []
+    let latest = initial
+    for (let i = 0; i < N; i += 1) {
+      const before = statusOf(env, def.appName)
+      const click = await automation.click({ index: initialBy(def.names.button), afterSeconds: 0.2 })
+      const after = click.ok === true ? await waitForStatus(env, def.appName, status => status.clicks === before.clicks + 1) : before
+      clickRows.push({
+        ok: click.ok === true && after.clicks === before.clicks + 1,
+        ms: click.totalMs ?? 0,
+        detail: `clicks ${before.clicks} → ${after.clicks} (${click.code || 'ok'}, image ${click.imageId || '-'})`,
+      })
+      if (click.ok === true) latest = click
     }
     report(def, 'click', clickRows)
 
-    // --- type (ASCII / CJK alternating) --------------------------------
+    // ---- double click -------------------------------------------------
+    const dblRows = []
+    for (let i = 0; i < N; i += 1) {
+      const before = statusOf(env, def.appName)
+      const dbl = await automation.doubleClick({ index: initialBy('dblarea'), intervalMs: 120, afterSeconds: 0.2 })
+      const after = dbl.ok === true ? await waitForStatus(env, def.appName, status => status.dclicks === before.dclicks + 1) : before
+      dblRows.push({
+        ok: dbl.ok === true && after.dclicks === before.dclicks + 1,
+        ms: dbl.totalMs ?? 0,
+        detail: `dclicks ${before.dclicks} → ${after.dclicks} (${dbl.code || 'ok'})`,
+      })
+    }
+    report(def, 'double_click', dblRows)
+
+    // ---- drag ---------------------------------------------------------
+    const dragRows = []
+    for (let i = 0; i < N; i += 1) {
+      const before = statusOf(env, def.appName)
+      const drag = await automation.drag({ fromIndex: initialBy('dragarea'), toIndex: initialBy('wheelarea'), steps: 10, afterSeconds: 0.2 })
+      const after = drag.ok === true ? await waitForStatus(env, def.appName, status => status.drags === before.drags + 1) : before
+      dragRows.push({
+        ok: drag.ok === true && after.drags === before.drags + 1 && after.dragdist > 0,
+        ms: drag.totalMs ?? 0,
+        detail: `drags ${before.drags} → ${after.drags}, dist=${after.dragdist} (${drag.code || 'ok'})`,
+      })
+    }
+    report(def, 'drag', dragRows)
+
+    // ---- scroll -------------------------------------------------------
+    const scrollRows = []
+    for (let i = 0; i < N; i += 1) {
+      const before = statusOf(env, def.appName)
+      const scroll = await automation.scroll({ index: initialBy('wheelarea'), direction: 'down', amount: 1, afterSeconds: 0.2 })
+      const after = scroll.ok === true ? await waitForStatus(env, def.appName, status => status.wheelTicks === before.wheelTicks + 1) : before
+      scrollRows.push({
+        ok: scroll.ok === true && after.wheelTicks === before.wheelTicks + 1,
+        ms: scroll.totalMs ?? 0,
+        detail: `wheelTicks ${before.wheelTicks} → ${after.wheelTicks} (${scroll.code || 'ok'})`,
+      })
+    }
+    report(def, 'scroll', scrollRows)
+
+    // ---- type ---------------------------------------------------------
     const typeRows = []
-    for (let index = 0; index < N; index += 1) {
-      const text = index % 2 === 0 ? `ascii-${index}` : `中文-${index}`
-      const result = await engine.type(instance, { name: def.inputName, text })
-      const status = parseStatus(await statusOf(engine, instance))
-      const ok = result.ok === true && result.readback?.verified === true && status.text === text
+    for (let i = 0; i < N; i += 1) {
+      const text = i % 2 === 0 ? `ascii-${i}` : `中文-${i}`
+      const typed = await automation.type({ index: initialBy(def.names.input), text, afterSeconds: 0.2 })
+      const status = statusOf(env, def.appName)
       typeRows.push({
-        ok,
-        ms: result.elapsedMs ?? 0,
-        detail: `text=${JSON.stringify(text)} readback=${JSON.stringify(result.readback?.actual ?? status.text)} (${result.code || result.channel})`,
+        ok: typed.ok === true && typed.readback?.verified === true && status.text === text,
+        ms: typed.totalMs ?? 0,
+        detail: `text=${JSON.stringify(text)} readback=${JSON.stringify(typed.readback?.actual ?? status.text)} (${typed.code || typed.channel})`,
       })
     }
     report(def, 'type', typeRows)
+    void latest
 
-    if (def.hasDragScroll === true) {
-      // --- double click ------------------------------------------------
-      const dblRows = []
-      for (let index = 0; index < N; index += 1) {
-        const before = parseStatus(await statusOf(engine, instance))
-        const result = await engine.doubleClick(instance, { name: 'dblarea' })
-        const after = result.ok === true
-          ? await waitForStatus(engine, instance, status => status.dclicks === before.dclicks + 1, 1500)
-          : before
-        dblRows.push({
-          ok: result.ok === true && after.dclicks === before.dclicks + 1,
-          ms: result.elapsedMs ?? 0,
-          detail: `dclicks ${before.dclicks} → ${after.dclicks} (${result.code || result.channel})`,
-        })
-      }
-      report(def, 'double_click', dblRows)
-
-      // --- drag ---------------------------------------------------------
-      const dragRect = await engine.resolveTarget(instance, { name: 'dragarea' })
-      const dragRows = []
-      for (let index = 0; index < N; index += 1) {
-        const before = parseStatus(await statusOf(engine, instance))
-        const from = { x: dragRect.rect.x + 20, y: dragRect.rect.y + Math.round(dragRect.rect.height / 2) }
-        const to = { x: dragRect.rect.x + dragRect.rect.width - 20, y: from.y }
-        const result = await engine.drag(instance, { fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, steps: 12, stepMs: 15 })
-        const after = result.ok === true
-          ? await waitForStatus(engine, instance, status => status.drags === before.drags + 1, 1500)
-          : before
-        dragRows.push({
-          ok: result.ok === true && after.drags === before.drags + 1 && after.dragdist > 0,
-          ms: result.elapsedMs ?? 0,
-          detail: `drags ${before.drags} → ${after.drags} (${result.code || result.channel})`,
-        })
-      }
-      report(def, 'drag', dragRows)
-
-      // --- scroll -------------------------------------------------------
-      const scrollRows = []
-      for (let index = 0; index < N; index += 1) {
-        const before = parseStatus(await statusOf(engine, instance))
-        const result = await engine.scroll(instance, { name: 'wheelarea', direction: 'down', amount: 1 })
-        const after = result.ok === true
-          ? await waitForStatus(engine, instance, status => status.wheelTicks === before.wheelTicks + 1, 1500)
-          : before
-        scrollRows.push({
-          ok: result.ok === true && after.wheelTicks === before.wheelTicks + 1,
-          ms: result.elapsedMs ?? 0,
-          detail: `wheelTicks ${before.wheelTicks} → ${after.wheelTicks} (${result.code || result.channel})`,
-        })
-      }
-      report(def, 'scroll', scrollRows)
+    return {
+      screenshot: { count: shotRows.filter(row => row.ok).length },
+      lastStatus: statusOf(env, def.appName).raw,
     }
   } finally {
-    await engine.close(instance.appId)
+    await env.stop()
   }
 }
 
-const selectedKeys = (process.env.UI_RELIABILITY_APPS || '').split(',').map(part => part.trim()).filter(Boolean)
-const defs = Object.values(apps)
-  .filter(def => existsSync(def.command[0]))
-  .filter(def => selectedKeys.length === 0 || selectedKeys.includes(def.key))
-const skipped = Object.values(apps).filter(def => !existsSync(def.command[0]))
-if (skipped.length > 0) console.log(`skipping unavailable apps: ${skipped.map(def => def.key).join(', ')}`)
-for (const def of defs) await runApp(def)
+const defs = [
+  {
+    key: 'panel_qt', label: 'Qt6 fixture', toolkit: 'qt6',
+    command: path.join(fixtureDir, 'panel_qt'), appName: 'panel_qt',
+    names: { button: 'button', input: 'input' },
+  },
+  {
+    key: 'panel_gtk3', label: 'GTK3 fixture', toolkit: 'gtk3',
+    command: path.join(fixtureDir, 'panel_gtk3'), appName: 'panel_gtk3',
+    names: { button: 'button', input: 'input' },
+  },
+]
+
+const summary = { generatedAt: new Date().toISOString(), attemptsPerOperation: N, durationMs: 0, results, footers: {} }
+for (const def of defs) {
+  summary.footers[def.key] = await runFixture(def)
+}
+summary.durationMs = Date.now() - started
 
 mkdirSync('test/out', { recursive: true })
-const summaryReport = {
-  generatedAt: new Date().toISOString(),
-  attemptsPerOperation: N,
-  durationMs: Date.now() - started,
-  environment: {
-    display: 'Xvfb 1024x768x24, private D-Bus session per instance',
-    pacing: 'Qt 150ms, GTK3 150ms, GTK4 300ms (plugin defaults)',
-    readbackTimeoutMs: 700,
-  },
-  results,
-}
-writeFileSync('test/out/reliability.json', `${JSON.stringify(summaryReport, null, 2)}\n`)
+writeFileSync('test/out/reliability.json', `${JSON.stringify(summary, null, 2)}\n`)
 
 console.log('\n| app | toolkit | operation | success | rate | mean | p50 | p95 | max |')
 console.log('|---|---|---|---|---|---|---|---|---|')
 for (const row of results) {
   console.log(`| ${row.app} | ${row.toolkit} | ${row.operation} | ${row.success}/${row.attempts} | ${(row.successRate * 100).toFixed(1)}% | ${row.meanMs.toFixed(0)}ms | ${row.p50Ms.toFixed(0)}ms | ${row.p95Ms.toFixed(0)}ms | ${row.maxMs.toFixed(0)}ms |`)
 }
-console.log(`\ntotal wall clock: ${(summaryReport.durationMs / 1000).toFixed(1)}s — wrote test/out/reliability.json`)
+console.log(`\ntotal wall clock: ${(summary.durationMs / 1000).toFixed(1)}s — wrote test/out/reliability.json`)
 
 const failed = results.filter(row => row.success !== row.attempts)
 process.exit(failed.length === 0 ? 0 : 1)

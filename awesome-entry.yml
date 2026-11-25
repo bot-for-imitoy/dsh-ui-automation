@@ -2,5 +2,5 @@ url: https://github.com/bot-for-imitoy/dsh-ui-automation
 name: bot-for-imitoy/dsh-ui-automation
 category: tools
 description:
-  en: "Linux-only headless Xvfb sandbox that drives GUI applications through AT-SPI with an XTEST fallback, and verifies every click, drag, scroll and key press by reading the application state back."
-  zh: "仅限 Linux 的隔离无头 Xvfb 沙盒：通过 AT-SPI（XTEST 兜底）驱动 GUI 应用，并在每次点击、拖拽、滚动和输入后回读应用状态，确认动作真正生效。"
+  en: "Linux-only numbered-image UI control: screenshots a display with yellow numbered badges, then clicks, double-clicks, scrolls, drags and types by index. Every action waits, captures the next numbered image, and returns it; indices only exist inside their own image."
+  zh: "仅限 Linux 的标号图片 UI 控制：把桌面截成带黄色数字徽章的截图，agent 只按编号点击、双击、滚动、拖拽和输入；每次操作后自动等待并返回下一张标号图片，编号只在对应图片内有效。"

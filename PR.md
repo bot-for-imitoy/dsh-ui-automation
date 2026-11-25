@@ -1,71 +1,76 @@
-Title: Add dsh-ui-automation — Linux headless Xvfb UI automation with state readback
+Title: Add dsh-ui-automation — numbered-image UI control for Linux
 
 Body:
 
 ## What it is
 
-`dsh-ui-automation` gives DSH a disposable GUI lab on Linux (X11/Xvfb + AT-SPI2; macOS and
-Windows are not supported). Each `ui_launch` starts the
-application in a private Xvfb display, a private D-Bus session and its own
-`XDG_RUNTIME_DIR`; a bundled AT-SPI driver then exposes ten `ui_*` tools:
+`dsh-ui-automation` gives DSH a **numbered-image** way to drive a Linux GUI. It screenshots the
+configured display, enumerates AT-SPI elements, draws yellow numbered badges (`1..N`) and thin
+outlines onto a cropped PNG, and returns the image path plus an index list. The agent then operates
+by number only: `ui_click`, `ui_double_click`, `ui_scroll`, `ui_drag`, `ui_type`. Every action
+clicks the recorded rectangle's centre with XTEST, waits `afterSeconds`, captures the **next**
+numbered image, and returns it. Indices from the previous image are dead.
 
-`ui_launch`, `ui_click`, `ui_double_click`, `ui_drag`, `ui_scroll`, `ui_type`,
-`ui_tree`, `ui_screenshot`, `ui_close`, `ui_list`.
+The full surface is six tools:
 
-Controls are addressed semantically (`name` + optional `role`/`index`/`match`,
-or the `path` from `ui_tree`) with explicit `x`/`y` as a fallback. Text input
-prefers AT-SPI `EditableText` and falls back to XTEST, so CJK text works in a
-private X11 shell without an input method daemon.
+| Tool | Parameters |
+|---|---|
+| `ui_screenshot` | — |
+| `ui_click` | `index`, `button?`, `afterSeconds?` |
+| `ui_double_click` | `index`, `intervalMs?`, `afterSeconds?` |
+| `ui_scroll` | `index`, `direction`, `amount?`, `afterSeconds?` |
+| `ui_drag` | `fromIndex`, `toIndex`, `steps?`, `afterSeconds?` |
+| `ui_type` | `text?` or `keys?`, `index?`, `afterSeconds?` |
+
+There is no launch tool and no sandbox management: the application owner starts the app and gives
+the plugin a `display` (the tests start Xvfb + a private D-Bus themselves). There is deliberately
+no name/role/path addressing and no raw x/y addressing — the contract is “number = pixel”.
 
 ## Why it is useful
 
-An agent that renders or modifies a UI should be able to prove that the UI
-works. This plugin closes that loop inside DSH:
-
-- every action is followed by a diff of the accessibility tree, so the result
-  says `effect.changed: false` instead of pretending a dropped toolkit event
-  succeeded;
-- actions are paced per toolkit (Qt ≥120 ms, GTK4 ≥300 ms) and a double-click
-  is followed by a 600 ms quiet window, because both were measured to be
-  necessary;
-- instances are fully isolated from each other and from the user's desktop,
-  and are torn down with their whole process group;
-- the tools are allow-listed per workspace/session, so a launch-and-type
-  surface is not exposed to every conversation.
-
-It is explicitly a sandbox/regression tool, not a remote desktop: it never
-attaches to the user's real windows.
+- **One contract.** A click is always an XTEST click at the centre of a numbered rectangle; there is
+  no semantic-tree API to reconcile with a coordinate fallback and no toolkit-specific action names.
+- **Inspectable.** The exact frame that produced the indices is on disk; the model can `read_image`
+  it, and a human reviewing the session can see what was numbered.
+- **Works where accessibility is thin.** Numbering comes from AT-SPI, but the screenshot is the
+  source of truth shown to the model.
+- **Bounded by construction.** Cropped to the windows, capped target count, pruned old images.
 
 ## How it is verified
 
-- `test/integration.mjs`: **56/56 checks** with the two fixtures shipped in
-  this repository (Qt 6 and GTK 3) — semantic and coordinate addressing,
-  double-click, 12-step drag, wheel, ASCII/CJK text via AT-SPI and XTEST, key
-  chords, screenshots, parallel isolation, launch-failure paths and tool entry
-  points. Pointing `XVFB_PROBE_DIR` at the three external research probes
-  (Qt 6 / GTK 3 / GTK 4) raises it to 104/104; both runs are recorded in
-  `VERIFY.md`. Only the 56-check run is reproducible from this repository
-  alone, which is why it is the headline number.
-- `test/reliability.mjs`: **300 operations (10 groups × 30), 0 failures** on
-  the shipped fixtures, mean 118–782 ms and p95 ≤ 805 ms per group; the
-  480-operation (16 groups) figure in `VERIFY.md` includes those external
-  probes. Per-group success rate and mean/p50/p95/max latency are tabulated
-  there.
-- Every assertion reads the fixture's own counter label over AT-SPI, so a PASS
-  means the application really changed state.
+- `test/integration.mjs`: **67/67 checks** with the fixtures shipped in this repository (Qt 6,
+  GTK 3, GTK 4) — screenshot/crop, stable numbering across captures, click, double-click, drag,
+  wheel, ASCII/CJK typing with AT-SPI readback, key chords, out-of-range/no-image errors, tool
+  entry points, attachment rendering, and the GTK 4 geometry guard. The test owns Xvfb, a private
+  session bus and the fixtures; every assertion reads the fixture's own counter label over AT-SPI.
+- `test/reliability.mjs`: **360 operations (12 groups × 30), 100% success**, measured end-to-end
+  (action → wait → enumerate → crop → badges → PNG): screenshot 476–494 ms mean, actions
+  675–926 ms mean, p95 ≤ 975 ms. Full table in `VERIFY.md`.
+- GTK 4.24 on X11 reports `(0,0,w,h)` for every widget. The plugin refuses the capture with
+  `E_NO_GEOMETRY` (and still writes the cropped evidence image) instead of drawing meaningless
+  badges — reproduced by `test/fixtures/panel_gtk4.c`.
+- WorkBuddy (a real Electron app) was numbered through the plugin itself: 35 targets, 1037×722.
 
 Screenshots from the verification run:
 
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/qt6-panel.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk3-panel.png
-- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-no-geometry.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/workbuddy-numbered.png
-  (a real Electron application read over AT-SPI; the yellow badges come from a separate
-  element-numbering prototype and only mark which nodes are addressable)
+
+## Limitations
+
+- Linux/X11 only; no Wayland-native path.
+- GTK 4.24 cannot be numbered (zero extents), reported as `E_NO_GEOMETRY`.
+- Electron needs `--force-renderer-accessibility`.
+- Indices are valid only for their own image; a change made outside the plugin requires a fresh
+  `ui_screenshot`.
+- No OCR: elements absent from AT-SPI appear in the screenshot but are not numbered.
+- The plugin can drive a real desktop; tools are allow-listed per session/workspace by default.
 
 ## Checklist
 
-- [x] public repository, MIT licensed, Linux only (documented in the README)
+- [x] public repository, MIT licensed, Linux only (documented in both READMEs)
 - [x] `dsh.bundle.patch` manifest (`cordis.patch.yml`)
 - [x] `dsh-plugin` topic
 - [x] installation documented for both `github:owner/repo` and a local checkout

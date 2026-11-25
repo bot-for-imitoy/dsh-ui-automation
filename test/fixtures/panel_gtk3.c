@@ -13,7 +13,7 @@
 
 static int g_clicks, g_dclicks, g_drags, g_dragdist, g_moves;
 static int g_wheelticks, g_wheeldelta;
-static int g_pressx = -1, g_releasex = -1;
+static int g_pressx = -1, g_pressy = -1, g_releasex = -1, g_releasey = -1;
 static GtkWidget *g_entry, *g_check, *g_status;
 
 static void refresh(void)
@@ -47,7 +47,9 @@ static gboolean on_drag_press(GtkWidget *w, GdkEventButton *e, gpointer d)
 {
     (void)w; (void)d;
     g_pressx = (int)e->x;
+    g_pressy = (int)e->y;
     g_releasex = -1;
+    g_releasey = -1;
     g_moves = 0;
     refresh();
     return TRUE;
@@ -59,6 +61,7 @@ static gboolean on_drag_motion(GtkWidget *w, GdkEventMotion *e, gpointer d)
     if (e->state & GDK_BUTTON1_MASK) {
         g_moves++;
         g_releasex = (int)e->x;
+        g_releasey = (int)e->y;
         refresh();
     }
     return TRUE;
@@ -68,8 +71,9 @@ static gboolean on_drag_release(GtkWidget *w, GdkEventButton *e, gpointer d)
 {
     (void)w; (void)d;
     g_releasex = (int)e->x;
+    g_releasey = (int)e->y;
     g_drags++;
-    g_dragdist += abs(g_releasex - g_pressx);
+    g_dragdist += abs(g_releasex - g_pressx) + abs(g_releasey - g_pressy);
     refresh();
     return TRUE;
 }

@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Headless UI automation",
-    "description": "Launch and drive GUI apps inside isolated headless Xvfb shells: click, double-click, drag, scroll, type (including CJK) and screenshot, using AT-SPI semantics with XTEST fallback. Every action is paced per toolkit and checked by reading the application state back."
+    "title": "Numbered-image UI control",
+    "description": "Screenshots a Linux display with yellow numbered badges and lets an agent click, double-click, scroll, drag and type by index. Every action waits, captures the next numbered image, and returns it; indices are valid only for their own image."
   }
 }

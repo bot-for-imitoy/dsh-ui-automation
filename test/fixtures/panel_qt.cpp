@@ -31,7 +31,9 @@ public:
     int dist = 0;
     int moves = 0;
     int pressX = -1;
+    int pressY = -1;
     int releaseX = -1;
+    int releaseY = -1;
     std::function<void()> onChange;
     explicit DragArea(QWidget *p) : QWidget(p)
     {
@@ -43,7 +45,9 @@ protected:
     void mousePressEvent(QMouseEvent *e) override
     {
         pressX = int(e->position().x());
+        pressY = int(e->position().y());
         releaseX = -1;
+        releaseY = -1;
         moves = 0;
         if (onChange) onChange();
     }
@@ -52,14 +56,16 @@ protected:
         if (e->buttons() & Qt::LeftButton) {
             moves++;
             releaseX = int(e->position().x());
+            releaseY = int(e->position().y());
             if (onChange) onChange();
         }
     }
     void mouseReleaseEvent(QMouseEvent *e) override
     {
         releaseX = int(e->position().x());
+        releaseY = int(e->position().y());
         drags++;
-        dist += std::abs(releaseX - pressX);
+        dist += std::abs(releaseX - pressX) + std::abs(releaseY - pressY);
         if (onChange) onChange();
     }
 };

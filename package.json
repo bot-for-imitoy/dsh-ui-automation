@@ -2,7 +2,7 @@
   "name": "dsh-ui-automation",
   "version": "1.0.0",
   "type": "module",
-  "description": "Linux-only headless Xvfb UI automation for DSH: launch, click, type (CJK included), drag, scroll and screenshot GUI apps through AT-SPI with XTEST fallback, reading application state back after every action.",
+  "description": "Linux-only numbered-image UI control for DSH: screenshot a display with yellow numbered badges, then click, double-click, scroll, drag and type by index; every action returns the next numbered image.",
   "license": "MIT",
   "author": "bot-for-imitoy",
   "homepage": "https://github.com/bot-for-imitoy/dsh-ui-automation#readme",
@@ -17,10 +17,11 @@
     "dsh-plugin",
     "dsh",
     "ui-automation",
+    "numbered-screenshot",
+    "screen-numbering",
     "at-spi",
     "xdotool",
-    "xvfb",
-    "headless",
+    "xtest",
     "gui-testing",
     "accessibility",
     "linux"
@@ -33,8 +34,7 @@
   "files": [
     "index.js",
     "lib",
-    "scripts/ui_shell.sh",
-    "scripts/atspi_driver.py",
+    "scripts/numbering.py",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -47,13 +47,15 @@
     "test/integration.mjs",
     "test/reliability.mjs",
     "test/smoke.mjs",
+    "test/capture-screenshots.mjs",
     "test/lib",
     "test/fixtures"
   ],
   "scripts": {
     "fixtures": "make -C test fixtures",
     "test": "node test/integration.mjs",
-    "test:reliability": "node test/reliability.mjs"
+    "test:reliability": "node test/reliability.mjs",
+    "test:capture": "node test/capture-screenshots.mjs"
   },
   "dsh": {
     "bundle": {

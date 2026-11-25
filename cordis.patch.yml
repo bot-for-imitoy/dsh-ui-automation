@@ -2,20 +2,17 @@
     - id: ui-automation
       name: 'dsh-ui-automation'
       config:
-        displayRange: '100-199'
-        defaultWidth: 1024
-        defaultHeight: 768
-        actionIntervalMs: 150
-        gtk4ActionIntervalMs: 300
-        doubleClickIntervalMs: 120
-        doubleClickGuardMs: 600
-        launchTimeoutMs: 20000
-        actionTimeoutMs: 15000
-        settleMs: 80
-        readbackTimeoutMs: 700
-        allowCoordinateMode: true
-        maxInstances: 3
+        display: ''
+        dbusAddress: ''
         screenshotDir: ''
+        fontFile: '/usr/share/fonts/TTF/Hack-Bold.ttf'
+        maxDepth: 24
+        maxTargets: 60
+        padding: 6
+        crop: true
+        afterSeconds: 1
+        keepImages: 15
+        attachImage: true
         enabledSessionIds: ''
         allowedWorkspacePaths: ''
         allowAllSessions: false

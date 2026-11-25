@@ -1,268 +1,214 @@
 /**
- * integration.mjs — real-machine operation matrix for dsh-ui-automation.
+ * integration.mjs — real-machine matrix for the numbered-image contract.
  *
- * Drives the plugin's own engine and tool definitions (not a mock) against:
- *   - Qt6 and GTK3 fixtures with click / double-click / drag / wheel counters;
- *   - the research probes app_qt (Qt6), app_gtk3, app_gtk4.
- *
- * Every assertion reads the application's own state label back over AT-SPI, so
- * a PASS means the application really changed state.
+ * The test owns Xvfb + a private D-Bus + the fixture (the plugin never launches
+ * applications). Every assertion reads the fixture's own counter label back
+ * through AT-SPI, so success means the application changed state.
  *
  *   node test/integration.mjs
  */
-import { existsSync, readdirSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { apps, Checks, createEngine, parseStatus, statusOf, waitForStatus } from './lib/harness.mjs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { Automation } from '../lib/automation.js'
+import { createTools } from '../lib/tools.js'
+import { fixtureDir, pluginDir, TestDisplay } from './lib/env.mjs'
+import { Checks, indexOf, indexMap, parseStatus, stableMapping, statusOf } from './lib/checks.mjs'
 
-const checks = new Checks('integration matrix')
-const engine = createEngine()
-const results = { apps: {}, isolation: null, failures: null, tools: null }
+const checks = new Checks('numbered-image integration matrix')
+const report = { apps: {}, errors: {}, tools: {}, gtk4: null }
 
-async function expectStatus(name, instance, predicate, detail) {
-  const status = await waitForStatus(engine, instance, predicate)
-  const ok = predicate(status)
-  return checks.check(name, ok, ok ? `${detail} — ${status.raw}` : `期望未满足 — ${status.raw}`)
+function exists(file) {
+  return typeof file === 'string' && existsSync(file)
 }
 
-async function open(def) {
-  const launched = await engine.launch({ command: def.command })
-  if (launched.ok !== true) {
-    checks.check(`${def.label} 启动`, false, launched.error)
-    return null
-  }
-  const instance = engine.instances.get(launched.appId)
-  checks.check(`${def.label} 启动`, true, `${launched.appId} @ ${launched.display} ${launched.startupMs}ms，toolkit=${launched.app.toolkit}`, launched.startupMs)
-  checks.check(`${def.label} 工具包识别`, launched.app.toolkit === def.toolkit, `${launched.app.toolkit}（期望 ${def.toolkit}）`)
-  checks.check(`${def.label} 窗口几何`, launched.window !== null && launched.window.width > 100, launched.window ? `${launched.window.width}x${launched.window.height}` : '无窗口')
-  return instance
+function targetNames(targets) {
+  return targets.map(target => target.name || target.label)
 }
 
-async function runMatrix(def) {
+async function runFixture(def) {
   checks.section(def.label)
-  const instance = await open(def)
-  if (instance === null) return
-  const appResult = { toolkit: def.toolkit, checks: [] }
-  results.apps[def.key] = appResult
+  const env = await TestDisplay.start()
+  const app = env.launch([def.command])
+  const automation = new Automation({
+    getConfig: () => env.config(),
+    pluginDir,
+    log: (level, message) => { if (process.env.UI_DEBUG === '1') console.log(`[${level}] ${message}`) },
+  })
+  const result = { checks: [] }
+  report.apps[def.key] = result
   const record = (name, ok, detail, ms) => {
-    appResult.checks.push({ name, ok, detail, ms })
+    result.checks.push({ name, ok, detail, ms })
     return checks.check(name, ok, detail, ms)
   }
 
   try {
-    const tree = await engine.tree(instance, { maxDepth: 12 })
-    const names = tree.nodes.map(node => node.name)
-    record('ui_tree 枚举到按钮', names.includes(def.buttonName), `${tree.nodes.length} 节点，按钮=${JSON.stringify(def.buttonName)}`)
-    record('ui_tree 枚举到输入框', names.includes(def.inputName), `输入框=${JSON.stringify(def.inputName)}`)
+    await env.waitForApp({ pid: app.pid })
+    record('fixture visible on AT-SPI', true, `${def.appName} pid ${app.pid}`)
 
-    const before = parseStatus(await statusOf(engine, instance))
-    record('初始状态可读', before.clicks !== null, before.raw)
+    // ---- screenshot ---------------------------------------------------
+    const first = await automation.screenshot()
+    record('ui_screenshot succeeds', first.ok === true, first.ok ? first.imageId : `${first.code}: ${first.error}`, first.elapsedMs)
+    if (first.ok !== true) return
+    record('image file exists', exists(first.imagePath) && exists(first.sidecarPath), first.imagePath)
+    record('geometry trusted', first.geometryTrusted === true, `${first.stats.distinctPositions} distinct positions`)
+    record('cropped to the window (no black desktop)',
+      first.image.width < first.screen.width && first.image.height < first.screen.height,
+      `image ${first.image.width}×${first.image.height} vs screen ${first.screen.width}×${first.screen.height}`)
+    record('numbered 6+ targets', first.targetCount >= 6, `${first.targetCount}: ${targetNames(first.targets).join(', ')}`)
+    for (const wanted of [def.names.input, def.names.button, def.names.check, 'dragarea', 'dblarea', 'wheelarea']) {
+      record(`target ${wanted} numbered`, targetNames(first.targets).includes(wanted), '')
+    }
+    const sidecar = JSON.parse(readFileSync(first.sidecarPath, 'utf8'))
+    record('sidecar records identity per index',
+      Array.isArray(sidecar.targets) && sidecar.targets.every(target => target.index && target.appPid && target.path && Array.isArray(target.center)),
+      `${sidecar.targets.length} entries, e.g. #1 pid=${sidecar.targets[0].appPid} path=${sidecar.targets[0].path}`)
 
-    // --- semantic click -------------------------------------------------
-    const click = await engine.click(instance, { name: def.buttonName })
-    const afterClick = await waitForStatus(engine, instance, status => status.clicks === before.clicks + 1)
-    record('AT-SPI 语义点击 button', click.ok === true && click.effect?.changed === true && afterClick.clicks === before.clicks + 1,
-      `channel=${click.channel} ${before.clicks} → ${afterClick.clicks}`, click.elapsedMs)
+    // ---- numbering stability -----------------------------------------
+    const second = await automation.screenshot()
+    const stable = stableMapping(first.targets, second.targets)
+    record('same screen → same indices', stable.ok === true, stable.detail)
+    record('a new capture gets a new imageId', second.imageId !== first.imageId, `${first.imageId} → ${second.imageId}`)
 
-    // --- coordinate click ----------------------------------------------
-    if (def.checkHasNoAction) {
-      // GTK4 reports fake (0,0,w,h) extents, so the tool must refuse the
-      // implicit centre and succeed only with explicit coordinates.
-      const implicit = await engine.click(instance, { name: def.checkName })
-      record('GTK4 无 Action + 假坐标时明确报错', implicit.ok === false && implicit.code === 'E_NO_COORDS',
-        `${implicit.code}: ${implicit.error}`, implicit.elapsedMs)
-      const stateBefore = parseStatus(await statusOf(engine, instance))
-      const explicit = await engine.click(instance, { x: 60, y: 100 })
-      const stateAfter = await waitForStatus(engine, instance, status => status.checked !== stateBefore.checked)
-      record('GTK4 显式坐标点击复选框', explicit.ok === true && explicit.effect?.changed === true && stateAfter.checked !== stateBefore.checked,
-        `checked ${stateBefore.checked} → ${stateAfter.checked}`, explicit.elapsedMs)
-    } else {
-      const rect = await engine.resolveTarget(instance, { name: def.buttonName })
-      const centre = { x: Math.round(rect.rect.x + rect.rect.width / 2), y: Math.round(rect.rect.y + rect.rect.height / 2) }
-      const beforeXY = parseStatus(await statusOf(engine, instance))
-      const byCoords = await engine.click(instance, centre)
-      const afterXY = await waitForStatus(engine, instance, status => status.clicks === beforeXY.clicks + 1)
-      record('坐标点击 button', byCoords.ok === true && byCoords.channel === 'xtest' && afterXY.clicks === beforeXY.clicks + 1,
-        `(${centre.x},${centre.y}) ${beforeXY.clicks} → ${afterXY.clicks}`, byCoords.elapsedMs)
+    // ---- click --------------------------------------------------------
+    const beforeClick = statusOf(env, def.appName)
+    const clickIndex = indexOf(second.targets, def.names.button)
+    const clicked = await automation.click({ index: clickIndex, afterSeconds: 0.25 })
+    const afterClick = statusOf(env, def.appName)
+    record('click by index → counter +1',
+      clicked.ok === true && afterClick.clicks === beforeClick.clicks + 1 && clicked.imageId !== second.imageId,
+      `#${clickIndex} clicks ${beforeClick.clicks} → ${afterClick.clicks}, image ${clicked.imageId}`, clicked.totalMs)
+    record('click returned an existing new image', exists(clicked.imagePath) && clicked.imagePath !== first.imagePath, clicked.imagePath)
+
+    // ---- double click -------------------------------------------------
+    const beforeDbl = statusOf(env, def.appName)
+    const dblIndex = indexOf(clicked.targets, 'dblarea')
+    const dbl = await automation.doubleClick({ index: dblIndex, intervalMs: 120, afterSeconds: 0.25 })
+    const afterDbl = statusOf(env, def.appName)
+    record('double click by index → dclicks +1',
+      dbl.ok === true && afterDbl.dclicks === beforeDbl.dclicks + 1,
+      `#${dblIndex} dclicks ${beforeDbl.dclicks} → ${afterDbl.dclicks}, image ${dbl.imageId}`, dbl.totalMs)
+
+    // ---- drag ---------------------------------------------------------
+    const beforeDrag = statusOf(env, def.appName)
+    const fromIndex = indexOf(dbl.targets, 'dragarea')
+    const toIndex = indexOf(dbl.targets, 'wheelarea')
+    const dragged = await automation.drag({ fromIndex, toIndex, steps: 10, afterSeconds: 0.25 })
+    const afterDrag = statusOf(env, def.appName)
+    record('drag fromIndex → toIndex → drags +1 and distance > 0',
+      dragged.ok === true && afterDrag.drags === beforeDrag.drags + 1 && afterDrag.dragdist > 0,
+      `#${fromIndex}→#${toIndex} drags ${beforeDrag.drags} → ${afterDrag.drags}, dist=${afterDrag.dragdist}`, dragged.totalMs)
+
+    // ---- scroll -------------------------------------------------------
+    const beforeScroll = statusOf(env, def.appName)
+    const scrollIndex = indexOf(dragged.targets, 'wheelarea')
+    const scrolled = await automation.scroll({ index: scrollIndex, direction: 'down', amount: 2, afterSeconds: 0.25 })
+    const afterScroll = statusOf(env, def.appName)
+    record('scroll by index → wheel ticks +2, −240',
+      scrolled.ok === true && afterScroll.wheelTicks === beforeScroll.wheelTicks + 2 && afterScroll.wheel === beforeScroll.wheel - 240,
+      `#${scrollIndex} wheelTicks ${beforeScroll.wheelTicks} → ${afterScroll.wheelTicks}, wheel=${afterScroll.wheel}`, scrolled.totalMs)
+
+    // ---- typing -------------------------------------------------------
+    for (const [label, text] of [['ASCII', 'hello numbered'], ['CJK', '你好，标号图片']]) {
+      const inputIndex = indexOf(scrolled.targets, def.names.input)
+      const typed = await automation.type({ index: inputIndex, text, afterSeconds: 0.25 })
+      const status = statusOf(env, def.appName)
+      record(`type ${label} through the input index`,
+        typed.ok === true && status.text === text && typed.readback?.verified === true,
+        `channel=${typed.channel} readback=${JSON.stringify(typed.readback?.actual)}`, typed.totalMs)
     }
 
-    // --- double click, drag, scroll (fixtures only) ---------------------
-    if (def.hasDragScroll) {
-      const beforeDbl = parseStatus(await statusOf(engine, instance))
-      const dbl = await engine.doubleClick(instance, { name: 'dblarea' })
-      const afterDbl = await waitForStatus(engine, instance, status => status.dclicks === beforeDbl.dclicks + 1)
-      record('双击 dblarea', dbl.ok === true && afterDbl.dclicks === beforeDbl.dclicks + 1,
-        `dclicks ${beforeDbl.dclicks} → ${afterDbl.dclicks}，间隔 ${dbl.actionResult?.count === 2 ? '2 次点击' : '?'}，${dbl.actionResult?.elapsedMs}ms`, dbl.elapsedMs)
+    const chordIndex = indexOf((await automation.screenshot()).targets, def.names.input)
+    const chord = await automation.type({ index: chordIndex, keys: 'ctrl+a', afterSeconds: 0.25 })
+    record('key chord through the input index', chord.ok === true && chord.channel === 'xtest-key',
+      `#${chordIndex} ${chord.channel}`, chord.totalMs)
 
-      const dragRect = await engine.resolveTarget(instance, { name: 'dragarea' })
-      const from = { x: dragRect.rect.x + 20, y: dragRect.rect.y + Math.round(dragRect.rect.height / 2) }
-      const to = { x: dragRect.rect.x + dragRect.rect.width - 20, y: from.y }
-      const beforeDrag = parseStatus(await statusOf(engine, instance))
-      const drag = await engine.drag(instance, { fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, steps: 12, stepMs: 15 })
-      const afterDrag = await waitForStatus(engine, instance, status => status.drags === beforeDrag.drags + 1)
-      record('拖拽 dragarea（12 步 × 15ms）',
-        drag.ok === true && afterDrag.drags === beforeDrag.drags + 1 && afterDrag.dragdist > 0
-          && drag.actionResult?.finalPointer?.x === to.x,
-        `drags ${beforeDrag.drags} → ${afterDrag.drags}，dist=${afterDrag.dragdist}，指针=${JSON.stringify(drag.actionResult?.finalPointer)}`, drag.elapsedMs)
+    // ---- invalid indices ---------------------------------------------
+    const outOfRange = await automation.click({ index: 999 })
+    record('index out of range → E_INDEX', outOfRange.ok === false && outOfRange.code === 'E_INDEX',
+      `${outOfRange.code}: ${outOfRange.error}`)
+    const zero = await automation.click({ index: 0 })
+    record('index 0 → E_INDEX', zero.ok === false && zero.code === 'E_INDEX', zero.code)
+    const noImage = new Automation({ getConfig: () => env.config(), pluginDir })
+    const withoutImage = await noImage.click({ index: 1 })
+    record('click before any screenshot → E_NO_IMAGE', withoutImage.ok === false && withoutImage.code === 'E_NO_IMAGE',
+      `${withoutImage.code}: ${withoutImage.error}`)
 
-      const beforeScroll = parseStatus(await statusOf(engine, instance))
-      const scroll = await engine.scroll(instance, { name: 'wheelarea', direction: 'down', amount: 2 })
-      const afterScroll = await waitForStatus(engine, instance, status => status.wheelTicks === beforeScroll.wheelTicks + 2)
-      record('滚轮向下 ×2（-240）',
-        scroll.ok === true && afterScroll.wheelTicks === beforeScroll.wheelTicks + 2 && afterScroll.wheel === beforeScroll.wheel - 240,
-        `wheelTicks ${beforeScroll.wheelTicks} → ${afterScroll.wheelTicks}，wheel=${afterScroll.wheel}`, scroll.elapsedMs)
+    // ---- tools layer ---------------------------------------------------
+    const tools = createTools(automation)
+    const names = tools.map(tool => tool.name)
+    record('registered tools', names.length === 6
+      && ['ui_screenshot', 'ui_click', 'ui_double_click', 'ui_scroll', 'ui_drag', 'ui_type'].every(name => names.includes(name)),
+      names.join(', '))
+    const screenshotTool = tools.find(tool => tool.name === 'ui_screenshot')
+    const shotValue = await screenshotTool.execute({})
+    const rendered = screenshotTool.output.render({}, shotValue)
+    record('ui_screenshot tool entry works', shotValue.ok === true, shotValue.imageId)
+    record('ui_screenshot render is readable', rendered[0].type === 'text' && rendered[0].text.includes('numbered screenshot'),
+      rendered[0].text.split('\n')[0])
+    const clickTool = tools.find(tool => tool.name === 'ui_click')
+    const clickValue = await clickTool.execute({ index: indexOf(shotValue.targets, def.names.button), afterSeconds: 0.2 })
+    record('ui_click tool entry works', clickValue.ok === true && clickValue.imageId !== shotValue.imageId, clickValue.imageId)
+    const badValue = await clickTool.execute({ index: 12345 })
+    record('tool error is structured', badValue.ok === false && badValue.code === 'E_INDEX', badValue.code)
+
+    // Attachment path: when the Host has an attachment store, the PNG is saved
+    // and the renderer emits an image content block ahead of the index list.
+    const fakeRef = {
+      attachmentId: 'att-test-1', mediaType: 'image/png', bytes: 1234,
+      width: 320, height: 240, name: 'shot.png',
     }
-
-    // --- typing ---------------------------------------------------------
-    for (const [label, text, mode] of [
-      ['ASCII', 'hello world', 'auto'],
-      ['中文（AT-SPI SetTextContents）', '你好世界', 'auto'],
-      ['中文（XTEST 键盘兜底）', '中文键输入', 'keys'],
-    ]) {
-      const beforeType = parseStatus(await statusOf(engine, instance))
-      const focusPoint = def.inputFocusPoint ?? {}
-      const typed = await engine.type(instance, { name: def.inputName, text, mode, x: focusPoint.x, y: focusPoint.y })
-      const afterType = await waitForStatus(engine, instance, status => status.text === text)
-      record(`输入${label}`, typed.ok === true && afterType.text === text,
-        `channel=${typed.channel} 回读=${JSON.stringify(afterType.text)}`, typed.elapsedMs)
-      if (beforeType.text === text) record('输入前后状态确实不同', false, '测试自身没有变化')
-    }
-
-    // --- key chord ------------------------------------------------------
-    const chordPoint = def.inputFocusPoint ?? {}
-    const chord = await engine.type(instance, { name: def.inputName, keys: 'ctrl+a', x: chordPoint.x, y: chordPoint.y })
-    record('按键组合 ctrl+a', chord.ok === true && chord.channel === 'xtest-key' && chord.focus?.steps !== undefined,
-      `focus steps=${chord.focus?.steps?.map(step => step.step).join('→') || '(已有焦点)'}`, chord.elapsedMs)
-
-    // --- tree/state after typing ---------------------------------------
-    const finalStatus = parseStatus(await statusOf(engine, instance))
-    record('最终状态一致', finalStatus.text === '中文键输入', finalStatus.raw)
-
-    // --- screenshot -----------------------------------------------------
-    const shot = await engine.screenshot(instance, {})
-    record('截图', shot.ok === true && existsSync(shot.path) && statSync(shot.path).size > 5000,
-      `${shot.path}（${shot.bytes} 字节，${shot.width}x${shot.height}）`, shot.elapsedMs)
-
-    // --- wrong target must fail loudly ---------------------------------
-    const missing = await engine.click(instance, { name: 'this-node-does-not-exist' })
-    record('不存在的目标返回结构化错误', missing.ok === false && missing.code === 'E_NO_NODE', `${missing.code}: ${missing.error}`)
+    const withAttachments = new Automation({
+      getConfig: () => env.config({ attachImage: true }),
+      pluginDir,
+      attachments: { saveImage: async () => fakeRef },
+    })
+    const attached = await withAttachments.screenshot()
+    const attachedRender = screenshotTool.output.render({}, attached)
+    record('attachment is created and rendered as an image block',
+      attached.ok === true && attached.attachment?.attachmentId === 'att-test-1'
+        && attachedRender[0].type === 'image' && attachedRender[1].type === 'text',
+      `blocks: ${attachedRender.map(block => block.type).join(', ')}`)
   } finally {
-    const closed = await engine.close(instance.appId)
-    record('ui_close 回收实例', closed.ok === true && !existsSync(closed.logDir ?? instance.shell.runDir),
-      `forced=${closed.forced}, ${closed.elapsedMs}ms`)
+    await env.stop()
   }
 }
 
-async function runIsolation() {
-  checks.section('并行隔离（两个壳互不可见）')
-  const first = await engine.launch({ command: apps.panelQt.command })
-  const second = await engine.launch({ command: apps.panelGtk3.command })
-  if (first.ok !== true || second.ok !== true) {
-    checks.check('并行启动两个壳', false, `${first.error ?? ''} ${second.error ?? ''}`)
-    return
+async function runGtk4Limit() {
+  checks.section('GTK4 geometry limit (reproducible E_NO_GEOMETRY)')
+  const env = await TestDisplay.start()
+  const app = env.launch([path.join(fixtureDir, 'panel_gtk4')])
+  const automation = new Automation({ getConfig: () => env.config(), pluginDir })
+  try {
+    await env.waitForApp({ pid: app.pid })
+    const shot = await automation.screenshot()
+    checks.check('GTK4 screenshot is refused with E_NO_GEOMETRY',
+      shot.ok === false && shot.code === 'E_NO_GEOMETRY' && shot.geometryTrusted === false,
+      `${shot.code}: ${shot.error}`)
+    checks.check('evidence image is still written',
+      exists(shot.imagePath) && shot.targets.length >= 3,
+      `${shot.imagePath} (${shot.targets?.length} targets, no badges)`)
+    checks.check('no stale indices are kept', automation.latestFor(env.display) === undefined, 'latest image invalidated')
+    report.gtk4 = { imagePath: shot.imagePath, targets: shot.targets?.length, code: shot.code }
+  } finally {
+    await env.stop()
   }
-  const a = engine.instances.get(first.appId)
-  const b = engine.instances.get(second.appId)
-  checks.check('并行启动两个壳', true, `${first.appId} @ ${first.display} / ${second.appId} @ ${second.display}`)
-  checks.check('display 号不同', first.display !== second.display, `${first.display} vs ${second.display}`)
-
-  const treeA = await engine.tree(a, { maxDepth: 3 })
-  const treeB = await engine.tree(b, { maxDepth: 3 })
-  checks.check('实例 A 只看到自己的应用', treeA.app.name === 'panel_qt' && treeB.app.name === 'panel_gtk3',
-    `A=${treeA.app.name} B=${treeB.app.name}`)
-
-  const beforeA = parseStatus(await statusOf(engine, a))
-  const beforeB = parseStatus(await statusOf(engine, b))
-  const clickA = await engine.click(a, { name: 'button' })
-  const statusA = clickA.ok === true
-    ? await waitForStatus(engine, a, status => status.clicks === beforeA.clicks + 1, 2000)
-    : beforeA
-  const clickB = await engine.click(b, { name: 'button' })
-  const statusB = clickB.ok === true
-    ? await waitForStatus(engine, b, status => status.clicks === beforeB.clicks + 1, 2000)
-    : beforeB
-  checks.check('两个实例可并行操作', clickA.ok && clickB.ok
-      && statusA.clicks === beforeA.clicks + 1 && statusB.clicks === beforeB.clicks + 1,
-    `A.clicks=${statusA.clicks} B.clicks=${statusB.clicks}`)
-
-  await engine.close(a.appId)
-  await engine.close(b.appId)
-  const left = engine.list()
-  checks.check('关闭后实例表清空', left.length === 0, `${left.length} 个残留`)
-  results.isolation = { displays: [first.display, second.display], clicks: [statusA.clicks, statusB.clicks] }
 }
 
-async function runLaunchFailures() {
-  checks.section('启动失败与超时处理')
-  const runDirsBefore = new Set(readdirSync(tmpdir()).filter(name => name.startsWith('dsh-ui-')))
-  const failed = await engine.launch({ command: ['bash', '-lc', 'echo boom >&2; exit 7'] })
-  checks.check('应用立即退出 → 结构化失败（带日志）',
-    failed.ok === false && failed.code === 'E_APP_EXITED' && typeof failed.logs?.app === 'string',
-    `${failed.code}: ${failed.error}；log=${JSON.stringify((failed.logs?.app || '').slice(0, 60))}`)
+const appDefs = [
+  {
+    key: 'panel_qt', label: 'Qt6 fixture', command: path.join(fixtureDir, 'panel_qt'), appName: 'panel_qt',
+    names: { input: 'input', button: 'button', check: 'check' },
+  },
+  {
+    key: 'panel_gtk3', label: 'GTK3 fixture', command: path.join(fixtureDir, 'panel_gtk3'), appName: 'panel_gtk3',
+    names: { input: 'input', button: 'button', check: 'check' },
+  },
+]
 
-  const missing = await engine.launch({ command: ['/definitely/not/a/binary'] })
-  checks.check('不存在的可执行文件 → 结构化失败',
-    missing.ok === false && ['E_APP_EXITED', 'E_NO_A11Y', 'E_SHELL_EXITED'].includes(missing.code),
-    `${missing.code}: ${missing.error}`)
-
-  const badCwd = await engine.launch({ command: apps.panelQt.command, cwd: '/no/such/dir' })
-  checks.check('不存在的工作目录 → E_BAD_CWD', badCwd.ok === false && badCwd.code === 'E_BAD_CWD', badCwd.error)
-
-  checks.check('失败启动没有留下实例', engine.list().length === 0, `${engine.list().length} 个残留`)
-  const runDirsAfter = readdirSync(tmpdir())
-    .filter(name => name.startsWith('dsh-ui-') && !runDirsBefore.has(name))
-  checks.check('失败启动没有留下运行时目录', runDirsAfter.length === 0,
-    runDirsAfter.length === 0 ? '0 个残留' : runDirsAfter.join(', '))
-  results.failures = { exited: failed.code, missing: missing.code, badCwd: badCwd.code }
-}
-
-async function runTools() {
-  checks.section('工具定义（defineTool → execute → render）')
-  const { createTools } = await import('../lib/tools.js')
-  const tools = createTools(engine)
-  const names = tools.map(tool => tool.name)
-  const expected = ['ui_launch', 'ui_click', 'ui_double_click', 'ui_drag', 'ui_scroll', 'ui_type', 'ui_tree', 'ui_screenshot', 'ui_close', 'ui_list']
-  checks.check('注册 10 个工具', expected.every(name => names.includes(name)), names.join(', '))
-  results.tools = { names }
-
-  const launchDef = tools.find(tool => tool.name === 'ui_launch')
-  const launchValue = await launchDef.execute({ command: apps.panelQt.command })
-  checks.check('ui_launch 通过工具入口工作', launchValue.ok === true, launchValue.appId)
-  const rendered = launchDef.output.render({}, launchValue)
-  checks.check('ui_launch 渲染为人类可读文本', rendered[0].type === 'text' && /已启动/.test(rendered[0].text), rendered[0].text.split('\n')[0])
-
-  const clickDef = tools.find(tool => tool.name === 'ui_click')
-  const clickValue = await clickDef.execute({ appId: launchValue.appId, name: 'button' })
-  checks.check('ui_click 通过工具入口工作', clickValue.ok === true && clickValue.effect?.changed === true, clickValue.channel)
-  const clickRender = clickDef.output.render({}, clickValue)[0].text
-  checks.check('ui_click 渲染包含回读结论', /状态已变化/.test(clickRender), clickRender.split('\n')[0])
-
-  const unknown = await clickDef.execute({ appId: 'ui-does-not-exist', name: 'button' })
-  checks.check('未知 appId → 结构化错误', unknown.ok === false && unknown.code === 'E_NO_INSTANCE', unknown.error)
-
-  const listValue = await tools.find(tool => tool.name === 'ui_list').execute({})
-  checks.check('ui_list 列出实例', listValue.ok === true && listValue.instances.length === 1, `${listValue.instances.length} 个`)
-
-  const closeValue = await tools.find(tool => tool.name === 'ui_close').execute({ appId: launchValue.appId })
-  checks.check('ui_close 通过工具入口工作', closeValue.ok === true, `forced=${closeValue.forced}`)
-}
-
-const only = process.argv[2]
-const available = def => existsSync(def.command[0])
-const selected = only === undefined
-  ? Object.values(apps).filter(available)
-  : [Object.values(apps).find(app => app.key === only)].filter(Boolean)
-const skipped = Object.values(apps).filter(def => !available(def))
-if (skipped.length > 0) console.log(`skipping unavailable apps: ${skipped.map(def => def.key).join(', ')}`)
-
-for (const def of selected) await runMatrix(def)
-if (only === undefined) {
-  await runIsolation()
-  await runLaunchFailures()
-  await runTools()
-}
+for (const def of appDefs) await runFixture(def)
+await runGtk4Limit()
 
 const ok = checks.summary()
-const { writeFileSync, mkdirSync } = await import('node:fs')
 mkdirSync('test/out', { recursive: true })
-writeFileSync('test/out/integration.json', `${JSON.stringify({ ok, rows: checks.rows, results }, null, 2)}\n`)
+writeFileSync('test/out/integration.json', `${JSON.stringify({ ok, rows: checks.rows, report }, null, 2)}\n`)
 process.exit(ok ? 0 : 1)

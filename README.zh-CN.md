@@ -1,39 +1,97 @@
-# dsh-ui-automation — Linux 版无头 UI 自动化（DeepSeek Harness 插件）
+# dsh-ui-automation — 标号图片 UI 控制（DeepSeek Harness 插件）
 
-**仅支持 Linux。** 插件通过 AT-SPI2 与 XTEST 驱动 Xvfb 里的 X11 应用；macOS 与 Windows 不支持，
-目前也没有 Wayland 路径。
+**仅支持 Linux。** 插件通过 XTEST 操作 X11 display，通过 AT-SPI2 读取屏幕上的元素。不支持
+macOS 与 Windows。
 
-在**隔离的无头 Xvfb 壳**里启动并操作 GUI 应用：点击、双击、拖拽、滚动、键盘输入（含中文）、
-枚举无障碍树、截图。每次动作都会**回读应用状态**，`ok: true` 不等于“真的生效”。
+Agent 不再用名字、角色或坐标寻址。它拿到的是**标号截图**：每个可操作元素画一个黄色数字徽章
+（`1..N`）和细边框，并有 sidecar JSON 记录编号 → 名字/角色/矩形。之后它只说“点 4”。每次操作都在
+编号 4 的矩形中心做一次 XTEST 点击，等待 `afterSeconds`，**重新截一张标号图**并返回；上一张图的
+编号在下一张图出现时就作废。
 
-> 这是应用沙盒 / 回归测试工具，**不是远程桌面**：沙盒里看不到也点不到用户真实桌面上的窗口，
-> 也不继承用户的登录态。每次 `ui_launch` 都新建独立 display、私有 D-Bus 与私有
-> `XDG_RUNTIME_DIR`。
+![Qt 6 fixture：clicks=1 dclicks=1 drags=1 dragdist=176 wheel=-240 text='中文键盘输入'](screenshots/qt6-panel.png)
 
-![Qt6 面板：clicks=1 dclicks=1 drags=2 dragdist=440 wheel=-240 text='中文键盘输入'](screenshots/qt6-panel.png)
+## 为什么用标号图片
 
-### 截图
+- **只有一个契约**：“编号即像素”。没有语义树 API 与坐标兜底两套逻辑，也没有各工具包不同的
+  action 名——点击永远是在编号矩形中心的一次 XTEST 点击。
+- **可检查**：模型（或复核会话的人）可以 `read_image` 看到产生编号的那一帧；编号过期是可见的，
+  不是隐藏状态。
+- **可操作范围有界**：截图按窗口裁剪，编号有上限，旧图会被清理，索引空间不会无限增长。
+- **无障碍信息少也能用**：过滤规则挑选可操作元素；树里没有的东西仍然出现在截图里。
 
-| Qt 6 测试面板 | GTK 3 测试面板 | GTK 4 探针 | WorkBuddy（Electron，真实应用） |
-|---|---|---|---|
-| ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) | ![GTK4](screenshots/gtk4-panel.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
+## 它是什么 / 不是什么
 
-截图都是 `ui_screenshot` 的原始输出，按窗口裁掉了四周的黑色桌面（Xvfb 根窗口 1024×768，窗口更小）。
-每张图底部的计数行与应用里读回的值一致——这正是重点：成功与否以应用状态为准，不以驱动返回值为准。
+- **是**屏幕级驱动：给一个 display（测试用 Xvfb，或真实桌面），按编号操作。
+- **不是**启动器或沙盒：没有 `ui_launch`。应用由使用方启动，插件只接收 `display`。
+- **不是**远程桌面协议：用的是本机 X server 与 AT-SPI。
+- **不是** OCR：矩形和标签来自无障碍树；树里没有的文字会出现在图中，但不会被编号。
 
-WorkBuddy 那张不是测试夹具，是插件在驱动一个真实的 Electron 应用；图中的黄色编号由同项目的
-"元素编号"原型叠加，用来显示无障碍树里**有哪些节点可寻址**。插件本身不画编号、也不读编号——
-它按名字 / 角色 / 路径寻址这些节点（见下文"定位方式"）。
+## 工具
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `ui_screenshot` | — | `imagePath`、`imageId`、`display`、`screen`、`crop`、`targets[]` |
+| `ui_click` | `index`、`button?`、`afterSeconds?` | 动作信息 + 下一张标号图 |
+| `ui_double_click` | `index`、`intervalMs?`、`afterSeconds?` | 动作信息 + 下一张标号图 |
+| `ui_scroll` | `index`、`direction`（up/down/left/right）、`amount?`、`afterSeconds?` | 动作信息 + 下一张标号图 |
+| `ui_drag` | `fromIndex`、`toIndex`、`steps?`、`afterSeconds?` | 动作信息 + 下一张标号图 |
+| `ui_type` | `text?` 或 `keys?`、`index?`、`afterSeconds?` | 输入/回读信息 + 下一张标号图 |
+
+`index` 从 1 开始，只对最近一张标号图有效。越界返回结构化 `E_INDEX`；还没有截图就操作返回
+`E_NO_IMAGE`。
+
+`afterSeconds` 默认取插件设置（1.0 秒），范围 0–30；等待发生在**新截图之前**，所以晚重绘的应用
+也能被拍到。
+
+`ui_type` 给了 `index` 会先点一下该元素聚焦。文本优先走 AT-SPI
+`EditableText.SetTextContents`（中文可靠）；节点没有 `EditableText` 时退回 XTEST 键入并回读校验。
+`keys`（`ctrl+a`、`Return` 等）始终走 XTEST。
+
+## 编号流程
+
+1. `xdpyinfo` 取屏幕尺寸；
+2. 遍历 session bus 上的每个 AT-SPI 应用；
+3. 保留可交互角色/动作（以及有名字的拖拽区域），去掉布局容器、完全重复项、以及“包住其他候选”
+   的区域；
+4. 阅读顺序：按垂直中心分带，带内从左到右；
+5. 按参与窗口的并集裁剪（加 `padding`），去掉黑桌面；
+6. `ffmpeg -f x11grab` 抓裁剪区域，用 `drawtext`
+   （`/usr/share/fonts/TTF/Hack-Bold.ttf`）画细边框 + 黄色徽章，不用 PIL、不用 Qt overlay；
+7. 写 `<imageId>.png` 和 `<imageId>.json`（编号 → 角色/名字/矩形/中心/应用 pid/AT-SPI 路径，
+   以及 screen/crop 元数据）。
+
+如果所有目标报同一个 `(x, y)`（GTK 4.24 在 X11 上就是这样），截图会返回 `E_NO_GEOMETRY`，同时
+仍写出裁剪后的证据图——坐标契约不能假装这些矩形可点。
+
+## 截图
+
+| Qt 6 fixture | GTK 3 fixture |
+|---|---|
+| ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) |
+
+| GTK 4（无法取坐标） | WorkBuddy（Electron 真实应用） |
+|---|---|
+| ![GTK4](screenshots/gtk4-no-geometry.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
+
+每张 fixture 图里都有它自己的计数行（`clicks=… dclicks=… drags=… wheel=… text='…'`），数值与
+每次标号操作后通过 AT-SPI 回读的状态一致。GTK 4 对所有控件报 `(0,0,w,h)`，插件宁可不画徽章并
+返回 `E_NO_GEOMETRY`，上面的 GTK4 图就是未编号的证据截图。
 
 ## 安装
 
 ### 依赖
 
-`Xvfb`、`dbus-run-session`（dbus）、`at-spi2-core`、`xdotool`、`ffmpeg`、
-`python3` + `python-gobject`（`gi.repository.Atspi`）。
+| 依赖 | 用途 |
+|---|---|
+| 一个 X11 `DISPLAY` | 插件只操作你给的 display，不负责启动 |
+| `at-spi2-core` | 编号助手读取的无障碍注册表 |
+| `python3` + `python-gobject`（`gi.repository.Atspi`） | AT-SPI 枚举 |
+| `xdotool` | XTEST 点击、拖拽、滚轮、键盘 |
+| `ffmpeg` | `x11grab` 截图 + `drawtext` 徽章 |
 
-- Arch：`pacman -S xvfb at-spi2-core xdotool ffmpeg python-gobject`
-- Debian/Ubuntu：`apt install xvfb dbus at-spi2-core xdotool ffmpeg python3-gi`
+Arch：`pacman -S at-spi2-core xdotool ffmpeg python-gobject`；
+Debian/Ubuntu：`apt install at-spi2-core xdotool ffmpeg python3-gi`。
+跑测试还需要 `xvfb`（`pacman -S xvfb` / `apt install xvfb`）。
 
 ### 从 GitHub 安装
 
@@ -44,119 +102,79 @@ dsh plugin --profile web add github:bot-for-imitoy/dsh-ui-automation
 ### 从本地目录安装
 
 ```bash
-git clone https://github.com/bot-for-imitoy/dsh-ui-automation.git
-dsh plugin --profile web add ./dsh-ui-automation
+dsh plugin --profile web add /path/to/dsh-ui-automation
 ```
 
-或在 **插件 → 添加本地目录** 选择本目录。安装后插件行出现 `ui-automation`，工具即可用。
-本地目录是链接安装：改完插件源码后，在 **设置 → 插件** 里把 `ui-automation` 关掉再打开
-（或重启 DSH），新代码才会生效。
-
-**可见范围**：默认只有工作区路径等于插件目录的会话能看到 `ui_*`。要换到别的会话：把那个
-会话所在工作区的绝对路径填进 `allowedWorkspacePaths`，或直接把会话 ID 填进
-`enabledSessionIds`（`allowAllSessions` 会向所有会话开放，不建议）。
-
-## 工具
-
-| 工具 | 作用 |
-|---|---|
-| `ui_launch` | 在新的隔离壳里启动应用，返回 `appId`、display、应用/窗口信息；失败附日志尾部 |
-| `ui_click` | 语义（name/role/path）或坐标（x/y）点击，动作后回读 |
-| `ui_double_click` | XTEST 双击，间隔默认 120ms（限制 40–390ms），回读 |
-| `ui_drag` | 按下→分步 MOVE→松开（默认 12 步 × 15ms），结束校验指针到达终点 |
-| `ui_scroll` | 滚轮 ±120/格（X11 按钮 4/5/6/7），回读 |
-| `ui_type` | 文本优先 AT-SPI `EditableText`，否则 XTEST 键盘；支持 `ctrl+a` 等组合；自动取焦点并回读文本 |
-| `ui_tree` | 枚举无障碍树（role/name/text/states/actions/rect），便于定位 |
-| `ui_screenshot` | ffmpeg x11grab 截整个虚拟屏为 PNG |
-| `ui_close` | 退出驱动并终止整个进程组（应用、Xvfb、私有总线），删除运行时目录 |
-| `ui_list` | 列出托管实例 |
-
-### 寻址
-
-- **语义寻址（首选）**：`name` + 可选 `role` / `index` / `match`，或 `path`（`ui_tree` 返回的 `0/1/2`）。
-- **坐标寻址**：`x`/`y`，只作兜底；需要配置 `allowCoordinateMode: true`。GTK4 的 extents 是
-  `(0,0,w,h)` 假值，插件会明确报 `E_NO_COORDS`，此时改用显式 `x/y`。
-
-### 回读与限速
-
-- 每个动作后对整棵无障碍树做带摘要的对比（排除 `focused` 这类易变状态），返回
-  `effect.changed` / `changedNodes` / `samples`。
-- Qt 与 GTK4 都有 AT-SPI `Press` 去抖：Qt 需 ≥120ms、GTK4 需 ≥300ms；插件按检测到的工具包
-  自动限速（默认 Qt/GTK3 150ms、GTK4 300ms）。
-- GTK4 的点击是异步生效的，回读会轮询到 `readbackTimeoutMs`（默认 700ms）。
-- 双击之后会等 `doubleClickGuardMs`（默认 600ms）：连续两次双击落在多击计数窗口内会被当成
-  三击。实测 300–350ms 时 GTK3 只有一半生效，600ms 后 100%。
-- 键盘输入前会依次尝试：窗口聚焦 → 控件 `grab_focus` → 必要时点击一次；最终确认 X 输入焦点
-  在应用窗口上，否则报 `E_NO_FOCUS` 而不是静默丢键。
+然后在插件设置里配置 `display`（留空则用 Host 的 `DISPLAY`）。
 
 ## 配置
 
-设置 → 插件 → `ui-automation`（全部字段实时生效，无需重启）：
-
-| 字段 | 默认 | 说明 |
+| 字段 | 默认 | 含义 |
 |---|---|---|
-| `displayRange` | `100-199` | 自动分配 display 号的区间 |
-| `defaultWidth` / `defaultHeight` | 1024 / 768 | 虚拟屏幕尺寸 |
-| `actionIntervalMs` | 150 | 通用动作间隔下限（Qt 需要 ≥120） |
-| `gtk4ActionIntervalMs` | 300 | GTK4 动作间隔下限 |
-| `doubleClickIntervalMs` | 120 | 双击间隔（40–390） |
-| `doubleClickGuardMs` | 600 | 双击之后的静默窗口 |
-| `launchTimeoutMs` | 20000 | 启动到进入 AT-SPI 的超时 |
-| `actionTimeoutMs` | 15000 | 单次驱动请求超时 |
-| `settleMs` | 80 | 动作后首次回读前等待 |
-| `readbackTimeoutMs` | 700 | 回读轮询上限 |
-| `allowCoordinateMode` | true | 是否允许坐标寻址 |
-| `maxInstances` | 3 | 并发实例上限 |
-| `screenshotDir` | 空 → `screenshots/` | 截图目录（相对插件目录） |
-| `enabledSessionIds` | 空 | 额外放行的会话 ID，逗号分隔 |
-| `allowedWorkspacePaths` | 空 → 插件目录 | 放行的工作区目录，逗号分隔 |
-| `allowAllSessions` | false | 对所有会话开放（不建议） |
+| `display` | 空 → `$DISPLAY` → `:0` | 目标 X display |
+| `dbusAddress` | 空 → Host 环境 | AT-SPI 在私有总线时填写（测试/CI 用） |
+| `screenshotDir` | 空 → `screenshots/` | PNG + sidecar JSON 目录 |
+| `fontFile` | Hack-Bold.ttf | 徽章字体 |
+| `maxDepth` | 24 | AT-SPI 遍历深度（Electron 需要 ≥24） |
+| `maxTargets` | 60 | 单张图编号上限（1–200） |
+| `padding` | 6 | 裁剪留白（像素） |
+| `crop` | true | 按窗口并集裁剪（去掉黑桌面） |
+| `afterSeconds` | 1.0 | 操作后重新截图前的等待（0–30） |
+| `keepImages` | 15 | 保留最近多少组生成的图片（精选截图不受影响） |
+| `attachImage` | true | Host 支持时同时把 PNG 作为 attachment/图片块返回（每次截图会存一份 attachment，介意存储可关闭） |
+| `enabledSessionIds` | 空 | 额外放行的会话 ID |
+| `allowedWorkspacePaths` | 空 → 插件目录 | 放行的工作区 |
+| `allowAllSessions` | false | 对所有会话开放 |
 
-## 示例
+## 可见范围与安全
 
-```text
-ui_launch({ command: ["/usr/bin/kate"], width: 1280, height: 800 })
-ui_tree({ appId: "ui-1-abcd", maxDepth: 6 })
-ui_click({ appId: "ui-1-abcd", name: "Open", role: "push button" })
-ui_type({ appId: "ui-1-abcd", name: "input", text: "你好，世界" })
-ui_type({ appId: "ui-1-abcd", name: "input", keys: "ctrl+a" })
-ui_screenshot({ appId: "ui-1-abcd" })
-ui_close({ appId: "ui-1-abcd" })
-```
+插件可以操作**你配置的那个 display**——包括真实桌面。因此默认只对白名单会话/工作区开放（默认是
+插件所在工作区），并给这些会话注入一段简短的使用提示。不要在没有明确需求时放开 `allowAllSessions`。
 
-## 隔离模型
+把它当成一台强力的本机输入设备，而不是沙盒：它不做进程隔离，点错编号就是真的点错。
 
-每次 `ui_launch` 都新建：
+## 图片返回
 
-1. 私有 `XDG_RUNTIME_DIR`（`mkdtemp`）；
-2. 私有 D-Bus session bus（`dbus-run-session`），并设置 `org.a11y.Status.IsEnabled=true`；
-3. 独立 `Xvfb :N -screen 0 WxHx24`；
-4. 独立 AT-SPI 驱动（Unix socket JSON-RPC）；
-5. 被测应用（独立进程组）。
-
-应用退出、`ui_close`、插件卸载或 DSH 进程退出时，整个进程组被终止、运行时目录被删除。
-两个实例互不可见、可并行操作。
+每个结果都带 `imagePath` 和文本索引清单。存在 `ctx.attachments` 服务且 `attachImage=true` 时，
+PNG 还会经 `saveImage()` 保存并以 `image` content block 返回；如果模型路由是纯文本的，Host 会把
+它替换成占位说明。这时（默认 DeepSeek 路由）模型需要看图时应该用 `read_image` 读取 `imagePath`。
 
 ## 已知边界
 
-- 看不到用户真实桌面窗口；操作的是**新启动的实例**，没有用户登录态/最近文件/剪贴板。
-- 无 GPU；重 3D / 需要 Wayland 合成的应用不可用。私有总线上 portal 后端退化。
-- 无输入法：fcitx5 在私有总线上不可用；但 XTEST `xdotool type` 在 X11 壳里可以直接输入中文。
-- GTK4 的 extents 不可信；Electron 默认没有 `EditableText`（需 `--force-renderer-accessibility`）。
-- Xvfb 默认无鉴权：这是**隔离沙盒，不是安全边界**，不要在里面放真实凭据。
-- 只测单屏 1024×768，多屏/缩放未覆盖。
+- **GTK 4.24（X11）** 对所有控件报 `(0,0,w,h)`，无法坐标编号，插件返回 `E_NO_GEOMETRY` 和裁剪后的
+  证据图。
+- **Electron** 必须带 `--force-renderer-accessibility`（WorkBuddy 截图即如此），否则树里几乎为空。
+- 编号只在对应图片内有效；插件之外发生的状态变化需要重新 `ui_screenshot`。
+- 很小的控件（单选按钮等）会编号，但点击目标仍然小；点击永远用记录的中心点。
+- 不做 OCR：AT-SPI 看不到的元素会出现在截图里，但不会编号。
+- 不原生支持 Wayland；XWayland 只按它暴露的 X11 能力工作。
+- 仅 Linux。
 
-## 验证
-
-真机验证矩阵、可靠性数据、安装后的真实工具调用与已知边界见 [VERIFY.md](VERIFY.md)。测试脚本在
-`test/`，可直接重跑：
+## 测试
 
 ```bash
-make -C test fixtures         # 编译 Qt6 / GTK3 测试面板
-node test/integration.mjs     # 操作矩阵 + 隔离 + 失败路径 + 工具入口
-node test/reliability.mjs     # 每类操作 30 次成功率/耗时
+make -C test fixtures          # 编译 Qt6 / GTK3 / GTK4 面板
+node test/integration.mjs      # 67 项断言，自己起 Xvfb + 私有 D-Bus + fixture
+node test/reliability.mjs      # 每类操作 30 次
+node test/capture-screenshots.mjs
+```
+
+测试自己拥有 Xvfb、私有总线和 fixture；插件只拿到 display（和总线地址）。所有断言都回读 fixture
+自己的计数标签。具体数字见 [VERIFY.md](VERIFY.md)。
+
+## 目录结构
+
+```
+index.js                 插件入口：设置、会话白名单、提示词
+lib/automation.js        最近图片状态、截图编排、动作
+lib/tools.js             6 个工具定义 + 人类可读渲染
+lib/x11.js               xdotool/XTEST 封装
+lib/shipped.js           从 DSH 安装目录解析 dsh-tools/schemastery
+scripts/numbering.py     AT-SPI 枚举、编号、裁剪、徽章、sidecar JSON
+test/                    fixtures + 集成/可靠性/截图脚本
+screenshots/             文档引用的精选标号图
 ```
 
 ## 许可
 
-MIT © 2026 bot-for-imitoy。见 [LICENSE](LICENSE)。
+MIT，仅 Linux。

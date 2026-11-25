@@ -1,44 +1,28 @@
 # Tests
 
-The tests drive the plugin's **real** engine and tool definitions (the same
-objects the Host registers) against live X11 applications. There are no mocks:
-a PASS means the application's own counter label changed, read back over
-AT-SPI.
+The plugin never launches applications, so each test owns the whole environment:
+one Xvfb display, a private `dbus-daemon` session bus, and the fixture. The
+plugin is then pointed at that display (and bus) through its normal settings.
 
-## Requirements
-
-- `Xvfb`, `dbus-run-session` (dbus), `xdotool`, `ffmpeg`
-- `python3` with `gi.repository.Atspi` (`python-gobject`)
-- to build the fixtures: `pkg-config`, a C compiler, Qt 6 Widgets and GTK 3 dev
-  headers
-
-## Run
-
-From the repository root:
-
-```bash
-make -C test fixtures        # build the Qt6 and GTK3 control panels
-node test/integration.mjs    # 56 checks: operations, isolation, failures, tools
-node test/reliability.mjs    # N attempts per operation (default 30 each)
-```
-
-Outputs land in `test/out/` (git-ignored):
-`integration.json`, `integration.log`, `reliability.json`, `reliability.log`
-and the screenshots taken during the run.
-
-## Optional research probes
-
-The GTK4 pitfalls (fake `extents`, 300 ms debounce, focus stealing) were
-investigated with three extra probe applications that are **not part of this
-repository** (`app_qt`, `app_gtk3`, `app_gtk4`). If you have them, point
-`XVFB_PROBE_DIR` at their directory and the matrix/reliability runners pick
-them up automatically:
+| File | Purpose |
+|---|---|
+| `fixtures/panel_qt.cpp` | Qt 6 panel: click, double-click, drag, wheel, text, status label |
+| `fixtures/panel_gtk3.c` | same panel for GTK 3 |
+| `fixtures/panel_gtk4.c` | GTK 4 panel; its all-zero AT-SPI extents reproduce `E_NO_GEOMETRY` |
+| `lib/env.mjs` | Xvfb + private D-Bus + fixture lifecycle, AT-SPI a11y switch |
+| `lib/checks.mjs` | PASS/FAIL collector, status parsing, index-stability helpers |
+| `integration.mjs` | numbered-image matrix, index errors, GTK4 guard, tool entry points |
+| `reliability.mjs` | 30 attempts per operation per fixture, with latency percentiles |
+| `capture-screenshots.mjs` | regenerates the curated images in `../screenshots/` |
+| `smoke.mjs` | one-fixture sanity run while developing |
 
 ```bash
-XVFB_PROBE_DIR=/path/to/probe node test/integration.mjs
+make -C test fixtures            # Q: pkg-config Qt6Widgets/gtk+-3.0/gtk4
+node test/integration.mjs
+node test/reliability.mjs
+node test/capture-screenshots.mjs
 ```
 
-Without the variable those cases are skipped with a one-line notice (the run
-then reports 56 checks instead of 105). The fixtures in `test/fixtures/` cover
-click, double-click, drag, scroll, text input (ASCII + CJK), key chords and
-screenshots for Qt 6 and GTK 3.
+Every assertion reads the fixture's own `clicks=… dclicks=… drags=… wheel=… text='…'`
+label back through AT-SPI — the fixture's status line is the source of truth, not
+the plugin's return value.

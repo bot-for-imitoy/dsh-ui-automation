@@ -8,9 +8,12 @@ test/out/
 # compiled test fixtures (rebuild with: make -C test fixtures)
 test/fixtures/panel_qt
 test/fixtures/panel_gtk3
+test/fixtures/panel_gtk4
 
 # screenshots produced at runtime (curated ones under screenshots/ are tracked)
 screenshots/ui-*.png
+screenshots/shot-*.png
+screenshots/shot-*.json
 
 # editor / OS noise
 .DS_Store

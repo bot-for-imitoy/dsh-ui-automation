@@ -1,57 +1,93 @@
-# dsh-ui-automation — Linux headless UI automation for DeepSeek Harness
+# dsh-ui-automation — numbered-image UI control for DeepSeek Harness
 
-**Linux only.** The plugin drives X11 applications inside Xvfb through AT-SPI2 and XTEST; macOS
-and Windows are not supported and there is no Wayland path yet.
+**Linux only.** The plugin drives an X11 display through XTEST and reads the screen through
+AT-SPI2. macOS and Windows are not supported.
 
-Headless UI automation for [DeepSeek Harness](https://github.com/deepseek-ai): launch a GUI
-application inside a private Xvfb shell and drive it like a user — click, double-click, drag,
-scroll, type (CJK included), walk the accessibility tree, take screenshots — with a state
-readback after **every** action.
+The agent never addresses a control by name, role or coordinate. It takes a **numbered
+screenshot**: every actionable element gets a yellow badge (`1..N`), a thin outline, and an entry
+in a sidecar JSON. The agent then says “click 4”. Every action clicks the centre of rectangle 4
+with XTEST, waits `afterSeconds`, captures a **new** numbered image, and returns it. Indices from
+the previous image are dead the moment the next image exists.
 
-> **This is an application sandbox, not a remote desktop.** Each `ui_launch` starts a brand-new
-> instance in its own display, its own D-Bus session and its own `XDG_RUNTIME_DIR`. It cannot see
-> or touch windows on the user's real desktop, and it does not inherit the user's login state.
+![Qt 6 fixture after a scripted run: clicks=1 dclicks=1 drags=1 dragdist=176 wheel=-240 text='中文键盘输入'](screenshots/qt6-panel.png)
 
-![Qt 6 fixture after a scripted run: clicks=1 dclicks=1 drags=2 dragdist=440 wheel=-240 text='中文键盘输入'](screenshots/qt6-panel.png)
+## Why numbered images
 
-## Why
+- **One contract.** “Number = pixel.” No semantic tree API to reconcile with a coordinate
+  fallback, no toolkit-specific action names — a click is always an XTEST click at the centre of
+  the numbered rectangle.
+- **Inspectable.** The model (or a human reviewing the session) can `read_image` the exact frame
+  that produced the indices. A stale numbering is visible, not hidden.
+- **Works where accessibility is thin.** The numbering filter picks actionable roles/actions; if
+  the tree is poor the model still sees the screenshot and can fall back to reading it.
+- **Bounded by construction.** The screenshot is cropped to the windows, indices are capped, and
+  old images are pruned; a session cannot accumulate an unbounded index space.
 
-An agent that can render a UI should be able to check that the UI actually works. This plugin
-gives DSH a small, isolated lab for that:
+## What it is / is not
 
-- exercise a Qt/GTK app the way a user would, without a desktop session;
-- assert on **application state**, not on "the click call returned 0";
-- reproduce toolkit-specific problems (GTK4 async state, debounce windows, focus stealing) in a
-  disposable shell;
-- keep the capability opt-in per workspace, because launching and typing into arbitrary
-  processes is a dangerous surface.
+- **It is** a screen-level driver: point it at a display (an Xvfb used by your tests, or a real
+  desktop) and drive it by number.
+- **It is not** a launcher or a sandbox. There is no `ui_launch`: the test/app owner starts the
+  application and gives the plugin a `display`. The plugin only screenshots and clicks.
+- **It is not** a remote-desktop protocol. It uses the local X server and AT-SPI.
+- **It is not** OCR: rectangles and labels come from the accessibility tree. Text the tree does
+  not expose still appears in the screenshot, but is not numbered.
 
-## What it is not
+## Tools
 
-- Not VNC/RDP and not a browser-automation replacement.
-- Not a secure sandbox: Xvfb has no authentication and the display is reachable by local
-  processes. Never put real credentials inside it.
-- Not a Wayland compositor: there is no GPU, no portal backend, and no input method daemon.
+| Tool | Parameters | Returns |
+|---|---|---|
+| `ui_screenshot` | — | `imagePath`, `imageId`, `display`, `screen`, `crop`, `targets[]` |
+| `ui_click` | `index`, `button?`, `afterSeconds?` | action details + next numbered image |
+| `ui_double_click` | `index`, `intervalMs?`, `afterSeconds?` | action details + next numbered image |
+| `ui_scroll` | `index`, `direction` (`up/down/left/right`), `amount?`, `afterSeconds?` | action details + next numbered image |
+| `ui_drag` | `fromIndex`, `toIndex`, `steps?`, `afterSeconds?` | action details + next numbered image |
+| `ui_type` | `text?` or `keys?`, `index?`, `afterSeconds?` | typed/readback details + next numbered image |
+
+`index` is 1-based and only valid for the most recent numbered image. Out-of-range indices return
+a structured `E_INDEX`; an action before any screenshot returns `E_NO_IMAGE`.
+
+`afterSeconds` defaults to the plugin setting (1.0 s) and is clamped to 0–30 s. The wait happens
+**before** the new screenshot, so apps that repaint late are still captured.
+
+`ui_type` with `index` clicks that element first to focus it. Text prefers AT-SPI
+`EditableText.SetTextContents` (reliable for CJK); when the node has no `EditableText` it falls
+back to XTEST typing and reads the text back to verify. `keys` (`ctrl+a`, `Return`, …) always uses
+XTEST.
+
+## How the numbering pipeline works
+
+1. Capture the display size with `xdpyinfo`.
+2. Walk every AT-SPI application on the session bus.
+3. Keep interactive roles/actions (plus named drag surfaces), drop layout wrappers, exact
+   duplicates, and regions that contain other candidates.
+4. Sort by reading order: cluster elements into vertical bands by their centre, then
+   left-to-right.
+5. Crop the image to the union of the contributing windows (plus `padding`), so no black desktop
+   surrounds the screenshot.
+6. `ffmpeg -f x11grab` grabs the crop and draws thin outlines + yellow badges with
+   `drawtext` (`/usr/share/fonts/TTF/Hack-Bold.ttf`). No PIL, no Qt overlay.
+7. Write `<imageId>.png` and `<imageId>.json` (index → role/name/rect/centre/app pid/AT-SPI path,
+   plus screen/crop metadata).
+
+If every target reports the same `(x, y)` (GTK 4.24 on X11 does this — see below), the capture is
+refused with `E_NO_GEOMETRY` and the raw cropped screenshot is still written as evidence. A
+coordinate contract must not pretend those rectangles are clickable.
 
 ## Screenshots
 
-| Qt 6 fixture | GTK 3 fixture | GTK 4 probe |
-|---|---|---|
-| ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) | ![GTK4](screenshots/gtk4-panel.png) |
+| Qt 6 fixture | GTK 3 fixture |
+|---|---|
+| ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) |
 
-| WorkBuddy (Electron) read over AT-SPI |
-|---|
-| ![WorkBuddy numbered](screenshots/workbuddy-numbered.png) |
+| GTK 4 (geometry unavailable) | WorkBuddy (Electron, real app) |
+|---|---|
+| ![GTK4](screenshots/gtk4-no-geometry.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
 
-Each window shows its own counter line (`clicks=… dclicks=… drags=… wheel=… text='…'`); the
-counters match the values read back over AT-SPI during the run, which is the point: success is
-measured on the application, not on the driver's return value. Screenshots are `ui_screenshot`
-output cropped to the application window (the Xvfb root is 1024×768, the window is smaller).
-
-The WorkBuddy capture is not a test fixture: it is the tool driving a real Electron
-application. The yellow badges are drawn by a separate element-numbering prototype from the same
-project to show *which nodes the accessibility tree exposes*; the plugin itself never renders or
-reads badges — it addresses those nodes by name, role and path (see **Addressing** below).
+Each fixture shows its own counter line (`clicks=… dclicks=… drags=… wheel=… text='…'`); the
+values match the state read back over AT-SPI after each numbered action. GTK 4 reports
+`(0,0,w,h)` for every widget, so the plugin returns `E_NO_GEOMETRY` instead of drawing meaningless
+badges — the capture above is the unnumbered evidence image.
 
 ## Install
 
@@ -59,15 +95,15 @@ reads badges — it addresses those nodes by name, role and path (see **Addressi
 
 | Dependency | Why |
 |---|---|
-| `Xvfb` | one virtual display per instance |
-| `dbus` (`dbus-run-session`) | private session bus; AT-SPI lives on it |
-| `at-spi2-core` | the accessibility registry the driver talks to |
-| `python3` + `python-gobject` (`gi.repository.Atspi`) | the AT-SPI driver |
-| `xdotool` | XTEST keyboard/mouse fallback |
-| `ffmpeg` | `x11grab` screenshots |
+| an X11 `DISPLAY` | the plugin operates on a display you provide; it does not start one |
+| `at-spi2-core` | accessibility registry the numbering helper reads |
+| `python3` + `python-gobject` (`gi.repository.Atspi`) | AT-SPI enumeration |
+| `xdotool` | XTEST clicks, drags, wheel and keyboard |
+| `ffmpeg` | `x11grab` capture + `drawtext` badges |
 
-On Arch: `pacman -S xvfb at-spi2-core xdotool ffmpeg python-gobject`.
-On Debian/Ubuntu: `apt install xvfb dbus at-spi2-core xdotool ffmpeg python3-gi`.
+On Arch: `pacman -S at-spi2-core xdotool ffmpeg python-gobject`.
+On Debian/Ubuntu: `apt install at-spi2-core xdotool ffmpeg python3-gi`.
+Tests additionally need `xvfb` (`pacman -S xvfb` / `apt install xvfb`).
 
 ### From GitHub
 
@@ -75,171 +111,91 @@ On Debian/Ubuntu: `apt install xvfb dbus at-spi2-core xdotool ffmpeg python3-gi`
 dsh plugin --profile web add github:bot-for-imitoy/dsh-ui-automation
 ```
 
-Restart DSH if the plugin does not appear immediately. The plugin row is called
-`ui-automation`.
-
 ### From a local checkout
 
 ```bash
-git clone https://github.com/bot-for-imitoy/dsh-ui-automation.git
-dsh plugin --profile web add ./dsh-ui-automation
+dsh plugin --profile web add /path/to/dsh-ui-automation
 ```
 
-Or use **Plugins → Add local directory** in the DSH UI. A local directory is a link install:
-after editing the source, toggle `ui-automation` off/on in **Settings → Plugins** (or restart
-DSH) so the Host reloads the module generation.
-
-## Visibility
-
-The `ui_*` tools are hidden from sessions by default. A session sees them only when its
-workspace path is on the allow-list (`allowedWorkspacePaths`), its session id is listed in
-`enabledSessionIds`, or `allowAllSessions` is on. With no configuration, the allow-list is the
-plugin's own directory, so only sessions working on the plugin itself get the tools.
-
-## Tools
-
-Every action tool returns structured JSON (plus a human-readable render) with `ok`, `appId`,
-`channel`, `target`, `elapsedMs`, `pacing` and an `effect` object. `effect.changed: false` means
-"the call succeeded but no state change was observed" — re-inspect with `ui_tree` instead of
-assuming success.
-
-| Tool | Purpose | Key parameters |
-|---|---|---|
-| `ui_launch` | start an app in a fresh isolated shell | `command` (required array), `cwd`, `width`, `height`, `display`, `appName`, `runRoot` |
-| `ui_click` | click a control | `appId` (required); `name`+`role`/`index`/`match` or `path`, or `x`/`y`; `via` (`auto`/`atspi`/`coordinate`), `action`, `button` |
-| `ui_double_click` | double-click (XTEST, always) | `appId`; semantic or coordinate target; `intervalMs` 40–390 (default 120) |
-| `ui_drag` | press → stepped move → release | `appId`; `fromName`/`fromPath` or `fromX`/`fromY`; same for `to…`; `steps` 1–120 (12), `stepMs` 1–200 (15), `durationMs`, `button` |
-| `ui_scroll` | wheel at a target/point | `appId`; semantic target or `x`/`y`; `direction` (`up`/`down`/`left`/`right`), `amount` 1–50 (±120 per tick) |
-| `ui_type` | text or key chords | `appId`; semantic target; `text` **or** `keys` (`ctrl+a`, `Return`, `shift+End`…); `mode` (`auto`/`atspi`/`keys`), `clearFirst` (default true), `delayMs`, `x`/`y` click-to-focus |
-| `ui_tree` | dump the accessibility tree | `appId`; `maxDepth` 1–32 (10), `maxNodes` 1–2000 (400), `includeText` |
-| `ui_screenshot` | capture the whole virtual screen | `appId`; `path` (file name or relative path) |
-| `ui_close` | tear down one instance | `appId`; `keepLogs` |
-| `ui_list` | list managed instances | — |
-
-### Addressing
-
-- **Semantic (preferred):** `name` with optional `role`, `index` (nth same-name match) and
-  `match` (`exact`/`contains`/`regex`), or `path` from `ui_tree` (`"0/1/2"`).
-- **Coordinates (fallback):** `x`/`y`; requires `allowCoordinateMode: true`. They only address
-  the private display, never the user's desktop.
-
-### Example
-
-```text
-ui_launch({ command: ["/usr/bin/kate"], width: 1280, height: 800 })
-ui_tree({ appId: "ui-1-abcd", maxDepth: 6 })
-ui_click({ appId: "ui-1-abcd", name: "Open", role: "push button" })
-ui_type({ appId: "ui-1-abcd", name: "input", text: "你好，世界" })
-ui_type({ appId: "ui-1-abcd", name: "input", keys: "ctrl+a" })
-ui_screenshot({ appId: "ui-1-abcd" })
-ui_close({ appId: "ui-1-abcd" })
-```
+Then set `display` in the plugin settings (or leave it empty to use the Host's `DISPLAY`).
 
 ## Configuration
 
-Settings → Plugins → `ui-automation`. All fields are volatile: changes apply immediately, no
-restart.
-
 | Field | Default | Meaning |
 |---|---|---|
-| `displayRange` | `100-199` | inclusive range of X display numbers to allocate |
-| `defaultWidth` / `defaultHeight` | `1024` / `768` | default virtual screen size (320–4096 / 240–4096) |
-| `actionIntervalMs` | `150` | minimum gap between actions; Qt needs ≥120 ms |
-| `gtk4ActionIntervalMs` | `300` | minimum gap for GTK4 apps; 150 ms still loses ~47% |
-| `doubleClickIntervalMs` | `120` | gap between the two clicks (40–390) |
-| `doubleClickGuardMs` | `600` | quiet window after a double-click; otherwise a second double-click inside the toolkit's multi-click window becomes a triple-click |
-| `launchTimeoutMs` | `20000` | launch → appears in AT-SPI |
-| `actionTimeoutMs` | `15000` | one driver request |
-| `settleMs` | `80` | wait before the first readback |
-| `readbackTimeoutMs` | `700` | readback polling limit (GTK4 applies state asynchronously) |
-| `allowCoordinateMode` | `true` | allow `x`/`y` addressing |
-| `maxInstances` | `3` | concurrent shells |
-| `screenshotDir` | empty → `screenshots/` | screenshot directory, relative to the plugin |
-| `enabledSessionIds` | empty | extra session ids (comma separated) |
-| `allowedWorkspacePaths` | empty → plugin dir | workspace directories allowed to use the tools |
-| `allowAllSessions` | `false` | expose the tools to every session (not recommended) |
+| `display` | empty → `$DISPLAY` → `:0` | target X display |
+| `dbusAddress` | empty → Host env | optional session-bus address when AT-SPI lives on a private bus (tests/CI) |
+| `screenshotDir` | empty → `screenshots/` | where PNG + sidecar JSON are written |
+| `fontFile` | `/usr/share/fonts/TTF/Hack-Bold.ttf` | badge font |
+| `maxDepth` | 24 | AT-SPI walk depth (Electron needs ≥24) |
+| `maxTargets` | 60 | badge cap per image (1–200) |
+| `padding` | 6 | crop margin in pixels |
+| `crop` | true | crop to the participating windows (no black desktop) |
+| `afterSeconds` | 1.0 | wait before the automatic re-screenshot (0–30) |
+| `keepImages` | 15 | generated image pairs kept on disk (curated screenshots are untouched) |
+| `attachImage` | true | also expose the PNG as an attachment/image block when the Host supports it (each capture adds a durable attachment; turn off if storage matters more than inline vision) |
+| `enabledSessionIds` | empty | extra session ids allowed to use the tools |
+| `allowedWorkspacePaths` | empty → plugin dir | workspaces allowed to use the tools |
+| `allowAllSessions` | false | open the tools to every session |
 
-## How it works
+## Visibility and safety
 
-Each `ui_launch` creates:
+The plugin can drive **whatever display you configure** — including a real desktop. Tools are
+therefore exposed only to allow-listed sessions/workspaces by default (the plugin's own workspace),
+and every session that gets them receives a short workflow prompt. Keep the allow-list narrow
+unless you really want every conversation to be able to click arbitrary windows.
 
-1. a private `XDG_RUNTIME_DIR` (`mkdtemp`);
-2. a private D-Bus session bus (`dbus-run-session`), with `org.a11y.Status.IsEnabled=true`;
-3. an Xvfb display (`:N -screen 0 WxHx24`);
-4. an AT-SPI driver speaking JSON-RPC over a Unix socket;
-5. the application, in its own process group.
+Treat it as a powerful local input device, not a sandbox: it does not isolate processes, and a
+misnumbered click is a real click.
 
-The toolkit is detected from `/proc/<pid>/maps` (`libQt6Core`, `libgtk-4`, `libgtk-3`,
-`libelectron`) and used to pace actions. Every action is followed by a diff of the
-accessibility tree (excluding volatile states such as `focused`), so the result reports
-`effect.changed`, `changedNodes` and before/after samples.
+## Image return
 
-Closing one instance — or the app exiting, the plugin unloading, or DSH exiting — terminates
-the whole process group (`TERM` → 2 s grace → `KILL`), unmounts the private runtime directory
-and removes it.
+Every result carries `imagePath` and a text index list. When a `ctx.attachments` service exists and
+`attachImage` is true, the PNG is also saved with `saveImage()` and returned as an `image` content
+block; if the model route is text-only the Host replaces it with a placeholder handle. In that
+case (the default DeepSeek route) the model should call `read_image` on `imagePath` when it needs
+to look at the frame.
 
-## Known pitfalls
+## Limitations
 
-These are measured behaviours, not guesses (see [VERIFY.md](VERIFY.md) for the raw numbers):
-
-- **GTK4 reports fake `extents`**: `(0,0,w,h)` for every node. Semantic clicks that need a
-  point fail with `E_NO_COORDS`; pass explicit `x`/`y`.
-- **Debounce**: AT-SPI `Press` is dropped if sent too fast. Qt needs ≥120 ms (default 150),
-  GTK4 ≥300 ms. The plugin paces per toolkit; do not bypass it by hammering the tools.
-- **Double-click vs. triple-click**: the gap *between two double-clicks* matters more than the
-  gap between the two clicks. Default `doubleClickGuardMs: 600`; at 300–350 ms GTK3 only
-  registered half of them.
-- **Focus without a window manager**: X focus is not assigned automatically. `ui_type` performs
-  window focus → `grab_focus` → click-to-focus if needed → verification, and fails with
-  `E_NO_FOCUS` rather than silently dropping keys.
-- **GTK4 focus stealing**: after another widget takes focus, `grab_focus` can return false and
-  `extents` cannot be trusted. Supply `x`/`y` on `ui_type` to click the field first.
-- **Electron** exposes no `EditableText` by default (`--force-renderer-accessibility` helps);
-  text input falls back to XTEST.
-- **No input method**: fcitx5 is unavailable on the private bus, but `xdotool type` can send
-  CJK keysyms directly in the X11 shell — the plugin uses that as the fallback.
-- **No GPU / Wayland / portals**: 3D apps and portal-dependent dialogs degrade.
-- **One screen, 1024×768 default**: multi-monitor and HiDPI scaling are untested.
-
-Error codes are structured: `E_APP_EXITED` (with `logs.app`), `E_BAD_CWD`, `E_NO_NODE`,
-`E_NO_INSTANCE`, `E_NO_COORDS`, `E_NO_FOCUS`, `E_READBACK`, `E_TOO_MANY`,
-`E_SHELL_EXITED`, `E_NO_A11Y`.
+- **GTK 4.24 on X11** reports `(0,0,w,h)` for every widget; coordinate numbering is impossible, so
+  the tool returns `E_NO_GEOMETRY` with the cropped evidence image.
+- **Electron** must run with `--force-renderer-accessibility` (as the WorkBuddy capture does) or
+  its tree contains almost nothing.
+- Indices are only valid for the image they came from; a state change made outside the plugin
+  requires a new `ui_screenshot`.
+- Radio buttons and other tiny controls get a badge but small hit targets are still small; the
+  click always uses the recorded centre.
+- No OCR: elements missing from AT-SPI appear in the screenshot but are not numbered.
+- No Wayland-native support; XWayland behaves like X11 only for what it exposes.
+- Linux only.
 
 ## Testing
 
 ```bash
-make -C test fixtures        # build the Qt 6 / GTK 3 control panels
-node test/integration.mjs    # operations, isolation, failure paths, tool entry points
-node test/reliability.mjs    # N attempts per operation (default 30), success rate + latency
+make -C test fixtures          # build the Qt6 / GTK3 / GTK4 panels
+node test/integration.mjs      # 67 checks, starts its own Xvfb + private D-Bus + fixtures
+node test/reliability.mjs      # 30 attempts per operation
+node test/capture-screenshots.mjs
 ```
 
-The runners read the fixture's counter label after every call, so a PASS means the application
-really changed. See [test/README.md](test/README.md) for optional research probes and
-[VERIFY.md](VERIFY.md) for the recorded matrix (104/104 checks including the optional
-research probes) and reliability run (480 operations, 0 failures). With only the fixtures
-shipped in this repository the default run is 56 checks.
-
-## Security
-
-The tools launch and type into arbitrary local programs, so access is allow-listed per
-workspace/session. The Xvfb display is **not** authenticated: this is an isolation boundary for
-tests, not a security boundary. Do not put real credentials, tokens or production data in a
-shell.
+The tests own Xvfb, the private session bus and the fixture; the plugin only receives the display
+(and bus address). Every assertion reads the fixture's own counter label over AT-SPI. See
+[VERIFY.md](VERIFY.md) for the measured numbers.
 
 ## Project layout
 
 ```
-index.js              plugin entry, config schema, session gating, prompt section
-lib/engine.js         instance lifecycle, actions, readback/diff, pacing
-lib/tools.js          the ten ui_* tool definitions
-lib/shell.js          spawning/tearing down the isolated shell
-lib/driver.js         JSON-RPC client for the AT-SPI driver
-lib/shipped.js        resolve Host-shipped peer dependencies
-scripts/ui_shell.sh   per-instance Xvfb + D-Bus + app wrapper
-scripts/atspi_driver.py  AT-SPI/XTEST driver
-test/                 fixtures and real-machine test runners
+index.js                 plugin entry, settings, session gating, prompt
+lib/automation.js        latest-image state, capture orchestration, actions
+lib/tools.js             the six tool definitions + human rendering
+lib/x11.js               xdotool/XTEST wrapper
+lib/shipped.js           resolve dsh-tools/schemastery from the DSH install
+scripts/numbering.py     AT-SPI enumeration, numbering, crop, badges, sidecar JSON
+test/                    fixtures + integration/reliability/capture scripts
+screenshots/             curated numbered images referenced by the docs
 ```
 
 ## License
 
-MIT © 2026 bot-for-imitoy. See [LICENSE](LICENSE).
+MIT. Only Linux is supported.
