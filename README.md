@@ -50,10 +50,10 @@ a structured `E_INDEX`; an action before any screenshot returns `E_NO_IMAGE`.
 `afterSeconds` defaults to the plugin setting (1.0 s) and is clamped to 0–30 s. The wait happens
 **before** the new screenshot, so apps that repaint late are still captured.
 
-`ui_type` with `index` clicks that element first to focus it. Text prefers AT-SPI
-`EditableText.SetTextContents` (reliable for CJK); when the node has no `EditableText` it falls
-back to XTEST typing and reads the text back to verify. `keys` (`ctrl+a`, `Return`, …) always uses
-XTEST.
+`ui_type` with `index` targets that element: the AT-SPI path writes its text directly
+(`EditableText.SetTextContents`, reliable for CJK); when the node has no `EditableText` the tool
+clicks the recorded centre to focus it, types with XTEST, and reads the text back to verify.
+`keys` (`ctrl+a`, `Return`, …) clicks the index to focus (when given) and always uses XTEST.
 
 ## How the numbering pipeline works
 

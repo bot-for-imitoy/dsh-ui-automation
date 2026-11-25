@@ -43,9 +43,10 @@ Agent 不再用名字、角色或坐标寻址。它拿到的是**标号截图**�
 `afterSeconds` 默认取插件设置（1.0 秒），范围 0–30；等待发生在**新截图之前**，所以晚重绘的应用
 也能被拍到。
 
-`ui_type` 给了 `index` 会先点一下该元素聚焦。文本优先走 AT-SPI
-`EditableText.SetTextContents`（中文可靠）；节点没有 `EditableText` 时退回 XTEST 键入并回读校验。
-`keys`（`ctrl+a`、`Return` 等）始终走 XTEST。
+`ui_type` 给了 `index` 就把该元素作为输入目标：AT-SPI 路径直接写文本
+（`EditableText.SetTextContents`，中文可靠）；节点没有 `EditableText` 时才用记录的中心点点击聚焦、
+走 XTEST 键入并回读校验。`keys`（`ctrl+a`、`Return` 等）在给了 index 时会先点击聚焦，按键始终走
+XTEST。
 
 ## 编号流程
 
