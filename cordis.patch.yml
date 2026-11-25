@@ -8,7 +8,7 @@
         fontFile: '/usr/share/fonts/TTF/Hack-Bold.ttf'
         maxDepth: 24
         maxTargets: 60
-        padding: 6
+        padding: 0
         crop: true
         afterSeconds: 1
         keepImages: 15

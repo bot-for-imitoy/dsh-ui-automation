@@ -29,7 +29,7 @@ GTK4 守卫）：
 ```
 == Qt6 fixture ==
   [PASS] ui_screenshot succeeds (467 ms) — shot-20261125-...
-  [PASS] cropped to the window (no black desktop) — image 542×472 vs screen 1024×768
+  [PASS] cropped to the window (no black desktop) — image 530×460 vs screen 1024×768
   [PASS] numbered 6+ targets — 6: input, button, check, dragarea, dblarea, wheelarea
   [PASS] sidecar records identity per index — 6 entries, e.g. #1 pid=… path=0/0
   [PASS] same screen → same indices — 6 targets, identical indices and rects
@@ -51,7 +51,7 @@ GTK4 守卫）：
 numbered-image integration matrix: 67/67 passed
 ```
 
-GTK3 fixture 结果相同（裁剪 588×472、6 个目标、所有操作通过）。
+GTK3 fixture 结果相同（裁剪 576×460、6 个目标、所有操作通过）。
 
 ## 2. 可靠性：12 组 × 30 次 = 360 次操作，100%
 
@@ -60,28 +60,28 @@ GTK3 fixture 结果相同（裁剪 588×472、6 个目标、所有操作通过�
 
 | fixture | 操作 | 成功 | 成功率 | mean | p50 | p95 | max |
 |---|---|---|---|---|---|---|---|
-| Qt 6 | screenshot | 30/30 | 100% | 494ms | 486ms | 552ms | 570ms |
-| Qt 6 | click | 30/30 | 100% | 825ms | 810ms | 930ms | 959ms |
-| Qt 6 | double_click | 30/30 | 100% | 820ms | 812ms | 863ms | 865ms |
-| Qt 6 | drag | 30/30 | 100% | 873ms | 866ms | 927ms | 943ms |
-| Qt 6 | scroll | 30/30 | 100% | 711ms | 700ms | 744ms | 864ms |
-| Qt 6 | type | 30/30 | 100% | 926ms | 930ms | 975ms | 1017ms |
-| GTK 3 | screenshot | 30/30 | 100% | 476ms | 471ms | 516ms | 534ms |
-| GTK 3 | click | 30/30 | 100% | 779ms | 772ms | 818ms | 818ms |
-| GTK 3 | double_click | 30/30 | 100% | 800ms | 795ms | 846ms | 867ms |
-| GTK 3 | drag | 30/30 | 100% | 852ms | 845ms | 887ms | 895ms |
-| GTK 3 | scroll | 30/30 | 100% | 675ms | 673ms | 728ms | 743ms |
-| GTK 3 | type | 30/30 | 100% | 866ms | 860ms | 913ms | 913ms |
+| Qt 6 | screenshot | 30/30 | 100% | 521ms | 520ms | 555ms | 559ms |
+| Qt 6 | click | 30/30 | 100% | 848ms | 845ms | 902ms | 906ms |
+| Qt 6 | double_click | 30/30 | 100% | 846ms | 838ms | 891ms | 894ms |
+| Qt 6 | drag | 30/30 | 100% | 860ms | 857ms | 916ms | 930ms |
+| Qt 6 | scroll | 30/30 | 100% | 702ms | 702ms | 753ms | 761ms |
+| Qt 6 | type | 30/30 | 100% | 906ms | 898ms | 974ms | 976ms |
+| GTK 3 | screenshot | 30/30 | 100% | 489ms | 488ms | 547ms | 554ms |
+| GTK 3 | click | 30/30 | 100% | 785ms | 776ms | 821ms | 876ms |
+| GTK 3 | double_click | 30/30 | 100% | 796ms | 793ms | 829ms | 834ms |
+| GTK 3 | drag | 30/30 | 100% | 864ms | 853ms | 911ms | 920ms |
+| GTK 3 | scroll | 30/30 | 100% | 727ms | 724ms | 785ms | 826ms |
+| GTK 3 | type | 30/30 | 100% | 897ms | 896ms | 982ms | 985ms |
 
-总墙钟 374.4s。`type` 的中文/ASCII 交替输入全部经 AT-SPI `SetTextContents` 并逐次回读。
+总墙钟 380.7s。`type` 的中文/ASCII 交替输入全部经 AT-SPI `SetTextContents` 并逐次回读。
 
 ## 3. 编号稳定性与裁剪
 
 - 同一画面连续两次截图：6 个目标的 **name → index 完全一致，rect 完全一致**，`imageId` 不同。
 - 编号只在对应图片内有效：每次动作返回新图，`previousImageId` 指向旧图；越界索引返回
   `E_INDEX`（带 `available`）。
-- 裁剪：Qt fixture 窗口 542×472（根窗口 1024×768），GTK3 588×472；精选截图里 Qt 651×472
-  （脚本输入中文后窗口略变宽）、GTK3 710×472。全部无黑边。
+- 裁剪：Qt fixture 窗口 530×460（根窗口 1024×768），GTK3 576×460；精选截图里 Qt 639×460
+  （脚本输入中文后窗口略变宽）、GTK3 690×460。`padding` 默认 0，右/下均无黑边。
 
 ## 4. GTK4：可复现的 `E_NO_GEOMETRY`
 
@@ -94,7 +94,7 @@ this toolkit (typically GTK4) cannot be numbered for a coordinate contract.
 ```
 
 同时仍写出裁剪后的证据图（未画徽章），并且作废 latest 索引，避免误点。
-证据图：`screenshots/gtk4-no-geometry.png`（472×432）。
+证据图：`screenshots/gtk4-no-geometry.png`（460×420）。
 
 ## 5. 图片返回（attachment）结论
 
@@ -111,7 +111,7 @@ this toolkit (typically GTK4) cannot be numbered for a coordinate contract.
 
 用插件自己的 `ui_screenshot` 在 1440×900 的 Xvfb 上截取：
 
-- `screenshots/workbuddy-numbered.png`，1037×722，35 个编号目标；
+- `screenshots/workbuddy-numbered.png`，1025×710，44 个编号目标（数量随界面状态变化）；
 - 启动参数需要 `--force-renderer-accessibility`（否则树里几乎为空），截图前等待界面稳定；
 - 该图是插件真实输出，不是外部原型。
 
@@ -133,7 +133,7 @@ this toolkit (typically GTK4) cannot be numbered for a coordinate contract.
 cd /home/bot-for-imitoy/workspace/dsh-ui-automation-plugin
 make -C test fixtures          # 编译 Qt6 / GTK3 / GTK4 面板（需要对应 -dev 包）
 node test/integration.mjs      # 67 项，约 90s
-node test/reliability.mjs      # 360 次操作，约 375s
+node test/reliability.mjs      # 360 次操作，约 380s
 node test/capture-screenshots.mjs   # 重新生成 screenshots/
 ```
 

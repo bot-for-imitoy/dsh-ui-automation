@@ -44,8 +44,8 @@ no name/role/path addressing and no raw x/y addressing — the contract is “nu
   entry points, attachment rendering, and the GTK 4 geometry guard. The test owns Xvfb, a private
   session bus and the fixtures; every assertion reads the fixture's own counter label over AT-SPI.
 - `test/reliability.mjs`: **360 operations (12 groups × 30), 100% success**, measured end-to-end
-  (action → wait → enumerate → crop → badges → PNG): screenshot 476–494 ms mean, actions
-  675–926 ms mean, p95 ≤ 975 ms. Full table in `VERIFY.md`.
+  (action → wait → enumerate → crop → badges → PNG): screenshot 489–521 ms mean, actions
+  702–906 ms mean, p95 ≤ 985 ms, 380.7 s total wall clock. Full table in `VERIFY.md`.
 - GTK 4.24 on X11 reports `(0,0,w,h)` for every widget. The plugin refuses the capture with
   `E_NO_GEOMETRY` (and still writes the cropped evidence image) instead of drawing meaningless
   badges — reproduced by `test/fixtures/panel_gtk4.c`.

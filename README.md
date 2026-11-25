@@ -129,7 +129,7 @@ Then set `display` in the plugin settings (or leave it empty to use the Host's `
 | `fontFile` | `/usr/share/fonts/TTF/Hack-Bold.ttf` | badge font |
 | `maxDepth` | 24 | AT-SPI walk depth (Electron needs ≥24) |
 | `maxTargets` | 60 | badge cap per image (1–200) |
-| `padding` | 6 | crop margin in pixels |
+| `padding` | 0 | crop margin in pixels added around the window; 0 keeps the image flush with the window |
 | `crop` | true | crop to the participating windows (no black desktop) |
 | `afterSeconds` | 1.0 | wait before the automatic re-screenshot (0–30) |
 | `keepImages` | 15 | generated image pairs kept on disk (curated screenshots are untouched) |

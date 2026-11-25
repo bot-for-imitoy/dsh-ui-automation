@@ -118,7 +118,7 @@ dsh plugin --profile web add /path/to/dsh-ui-automation
 | `fontFile` | Hack-Bold.ttf | 徽章字体 |
 | `maxDepth` | 24 | AT-SPI 遍历深度（Electron 需要 ≥24） |
 | `maxTargets` | 60 | 单张图编号上限（1–200） |
-| `padding` | 6 | 裁剪留白（像素） |
+| `padding` | 0 | 裁剪留白（像素）；0 表示紧贴窗口、不留黑边 |
 | `crop` | true | 按窗口并集裁剪（去掉黑桌面） |
 | `afterSeconds` | 1.0 | 操作后重新截图前的等待（0–30） |
 | `keepImages` | 15 | 保留最近多少组生成的图片（精选截图不受影响） |

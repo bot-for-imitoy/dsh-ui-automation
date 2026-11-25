@@ -544,10 +544,15 @@ def cmd_shot(args):
     if args.no_crop or not app_frames:
         crop = (0, 0, screen[0], screen[1])
     else:
-        crop = union(app_frames)
+        x0, y0, w0, h0 = union(app_frames)
         pad = max(0, args.padding)
-        crop = (crop[0] - pad, crop[1] - pad, crop[2] + pad * 2, crop[3] + pad * 2)
-        crop = clamp_rect(crop, screen)
+        # pad symmetrically, but clamp each side independently: padding past the
+        # root window edge used to leave a black strip on the right/bottom
+        left = max(0, x0 - pad)
+        top = max(0, y0 - pad)
+        right = min(screen[0], x0 + w0 + pad)
+        bottom = min(screen[1], y0 + h0 + pad)
+        crop = clamp_rect((left, top, right - left, bottom - top), screen)
         if crop[2] * crop[3] >= screen[0] * screen[1] * 0.98:
             crop = (0, 0, screen[0], screen[1])
 
@@ -767,7 +772,7 @@ def main():
     parser.add_argument('--font', default=FONT_DEFAULT)
     parser.add_argument('--max-depth', type=int, default=24)
     parser.add_argument('--max-targets', type=int, default=60)
-    parser.add_argument('--padding', type=int, default=6)
+    parser.add_argument('--padding', type=int, default=0)
     parser.add_argument('--no-crop', action='store_true')
     parser.add_argument('--app-pid', type=int, default=0)
     parser.add_argument('--node-path', default='')

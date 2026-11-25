@@ -164,7 +164,7 @@ export class TestDisplay {
       fontFile: '/usr/share/fonts/TTF/Hack-Bold.ttf',
       maxDepth: 24,
       maxTargets: 40,
-      padding: 6,
+      padding: 0,
       crop: true,
       afterSeconds: 0.35,
       keepImages: 200,
