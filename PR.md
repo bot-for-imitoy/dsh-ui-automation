@@ -1,4 +1,4 @@
-Title: Add dsh-ui-automation — numbered-image UI control for Linux
+Title: Add dsh-ui-automation 2.1.0 — numbered-image UI control for Linux, with GTK4 X11-origin fallback
 
 Body:
 
@@ -26,42 +26,58 @@ There is no launch tool and no sandbox management: the application owner starts 
 the plugin a `display` (the tests start Xvfb + a private D-Bus themselves). There is deliberately
 no name/role/path addressing and no raw x/y addressing — the contract is “number = pixel”.
 
+## GTK4 support (new in 2.1.0)
+
+GTK 4.24's AT-SPI bridge hardcodes every `SCREEN` coordinate to `(0,0)` while `GetExtents(WINDOW)`
+is correct ([investigation](docs/GTK4-GEOMETRY.md)). The plugin now detects that shape **per
+application** and rebuilds each rectangle from the X11 toplevel's content origin plus the WINDOW
+rectangle. The toplevel is matched by pid and client-area size (`xdotool` + `xwininfo`), dialogs and
+popovers are handled per frame, and `_GTK_FRAME_EXTENTS` is honoured when the toolkit advertises it.
+
+Safety is the point of the design:
+
+- GTK3/Qt never match the detection shape and are untouched;
+- if the X11 origin cannot be computed, that application's targets are **dropped** with a
+  structured warning (`E_NO_X11_UTILS` / `E_NO_X11_WINDOW` / `E_NO_X11_ORIGIN`) and
+  `geometryTrusted: false` — never renumbered at `(0,0)`;
+- `gtk4OriginFallback=false` refuses GTK4 apps explicitly;
+- a final global guard still rejects a capture whose remaining targets all share one origin.
+
 ## Why it is useful
 
-- **One contract.** A click is always an XTEST click at the centre of a numbered rectangle; there is
-  no semantic-tree API to reconcile with a coordinate fallback and no toolkit-specific action names.
-- **Inspectable.** The exact frame that produced the indices is on disk; the model can `read_image`
-  it, and a human reviewing the session can see what was numbered.
-- **Works where accessibility is thin.** Numbering comes from AT-SPI, but the screenshot is the
-  source of truth shown to the model.
+- **One contract.** A click is always an XTEST click at the centre of a numbered rectangle.
+- **Inspectable.** The exact frame that produced the indices is on disk.
 - **Bounded by construction.** Cropped to the windows, capped target count, pruned old images.
+- **Safe failure.** A toolkit whose coordinates cannot be trusted loses its indices instead of
+  producing wrong clicks.
 
 ## How it is verified
 
-- `test/integration.mjs`: **67/67 checks** with the fixtures shipped in this repository (Qt 6,
-  GTK 3, GTK 4) — screenshot/crop, stable numbering across captures, click, double-click, drag,
-  wheel, ASCII/CJK typing with AT-SPI readback, key chords, out-of-range/no-image errors, tool
-  entry points, attachment rendering, and the GTK 4 geometry guard. The test owns Xvfb, a private
-  session bus and the fixtures; every assertion reads the fixture's own counter label over AT-SPI.
-- `test/reliability.mjs`: **360 operations (12 groups × 30), 100% success**, measured end-to-end
-  (action → wait → enumerate → crop → badges → PNG): screenshot 489–521 ms mean, actions
-  702–906 ms mean, p95 ≤ 985 ms, 380.7 s total wall clock. Full table in `VERIFY.md`.
-- GTK 4.24 on X11 reports `(0,0,w,h)` for every widget. The plugin refuses the capture with
-  `E_NO_GEOMETRY` (and still writes the cropped evidence image) instead of drawing meaningless
-  badges — reproduced by `test/fixtures/panel_gtk4.c`.
-- WorkBuddy (a real Electron app) was numbered through the plugin itself: 35 targets, 1037×722.
+- `test/integration.mjs`: **80/80 checks** with the fixtures shipped in this repository (Qt 6,
+  GTK 3, GTK 4): screenshot/crop, stable numbering, click, double-click, drag, wheel, ASCII/CJK
+  typing, key chords, index errors, attachment rendering, tool entry points, **GTK4 fallback**
+  (numbered, click increments the counter, window move shifts every rect by exactly +200/+150,
+  pixel bbox error 0 px, fallback-off refusal) and a **mixed Qt6+GTK3+GTK4 desktop** (18 targets,
+  each click lands on its own app, fallback-off drops only GTK4).
+- `test/reliability.mjs`: **450 operations (15 groups × 30), 100% success**, measured end-to-end:
+  screenshot 499–550 ms mean, actions 704–972 ms mean, p95 ≤ 1029 ms. Full table in `VERIFY.md`.
+- Measured accuracy: GTK4 fixture **0 px** (pixel bbox assertion); real libadwaita apps 5–11 px and
+  popovers ~8 px per the report — still inside the control's hit area.
+- WorkBuddy (a real Electron app) was numbered through the plugin itself: 40 targets, 1025×710.
 
 Screenshots from the verification run:
 
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/qt6-panel.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk3-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-numbered.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-no-geometry.png
 - https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/workbuddy-numbered.png
 
 ## Limitations
 
 - Linux/X11 only; no Wayland-native path.
-- GTK 4.24 cannot be numbered (zero extents), reported as `E_NO_GEOMETRY`.
+- GTK4 fallback needs `x11-utils`; without it the app is refused with a warning.
+- libadwaita/popover residual 5–11 px (clicks still land); `_GTK_FRAME_EXTENTS` is used when present.
 - Electron needs `--force-renderer-accessibility`.
 - Indices are valid only for their own image; a change made outside the plugin requires a fresh
   `ui_screenshot`.

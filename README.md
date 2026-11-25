@@ -70,9 +70,26 @@ clicks the recorded centre to focus it, types with XTEST, and reads the text bac
 7. Write `<imageId>.png` and `<imageId>.json` (index → role/name/rect/centre/app pid/AT-SPI path,
    plus screen/crop metadata).
 
-If every target reports the same `(x, y)` (GTK 4.24 on X11 does this — see below), the capture is
-refused with `E_NO_GEOMETRY` and the raw cropped screenshot is still written as evidence. A
-coordinate contract must not pretend those rectangles are clickable.
+### GTK4 and the X11-origin fallback
+
+GTK 4.24's AT-SPI bridge hardcodes every `SCREEN` origin to `(0, 0)` while `WINDOW` rectangles stay
+correct ([full investigation](docs/GTK4-GEOMETRY.md)). The plugin detects that shape **per
+application** — one `SCREEN` origin, several `WINDOW` origins — and rebuilds each rectangle as
+
+```
+X11 toplevel content origin + GetExtents(WINDOW)
+```
+
+using `xdotool search --pid` + `xwininfo`/`xprop` (including `_GTK_FRAME_EXTENTS` when the toolkit
+advertises it). A GTK4 surface is one X11 toplevel, so dialogs and popovers are matched and shifted
+independently. GTK3/Qt report real `SCREEN` origins, so they never enter this path.
+
+Failure is never silent: if no X11 window can be matched, that application's targets are **dropped**
+with a structured warning (`E_NO_X11_UTILS`, `E_NO_X11_WINDOW`, `E_NO_X11_ORIGIN`) and
+`geometryTrusted: false`. A GTK4 target is therefore never numbered at `(0,0)` and never clicked
+into the top-left corner. `gtk4OriginFallback=false` turns the repair off and drops the app the same
+way. After the per-app pass a global guard still refuses a capture whose remaining targets all
+share one origin.
 
 ## Screenshots
 
@@ -80,14 +97,18 @@ coordinate contract must not pretend those rectangles are clickable.
 |---|---|
 | ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) |
 
-| GTK 4 (geometry unavailable) | WorkBuddy (Electron, real app) |
+| GTK 4 (X11-origin fallback) | GTK 4 with the fallback disabled |
 |---|---|
-| ![GTK4](screenshots/gtk4-no-geometry.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
+| ![GTK4 numbered](screenshots/gtk4-numbered.png) | ![GTK4 refused](screenshots/gtk4-no-geometry.png) |
+
+| WorkBuddy (Electron, real app) |
+|---|
+| ![WorkBuddy](screenshots/workbuddy-numbered.png) |
 
 Each fixture shows its own counter line (`clicks=… dclicks=… drags=… wheel=… text='…'`); the
-values match the state read back over AT-SPI after each numbered action. GTK 4 reports
-`(0,0,w,h)` for every widget, so the plugin returns `E_NO_GEOMETRY` instead of drawing meaningless
-badges — the capture above is the unnumbered evidence image.
+values match the state read back over AT-SPI after each numbered action. The GTK 4 capture uses
+the X11-origin fallback; the second image is what the guard produces when the fallback is disabled
+(`E_NO_GEOMETRY`, app dropped, no badges).
 
 ## Install
 
@@ -100,6 +121,7 @@ badges — the capture above is the unnumbered evidence image.
 | `python3` + `python-gobject` (`gi.repository.Atspi`) | AT-SPI enumeration |
 | `xdotool` | XTEST clicks, drags, wheel and keyboard |
 | `ffmpeg` | `x11grab` capture + `drawtext` badges |
+| `x11-utils` (`xwininfo`, `xprop`) | GTK4 X11-origin fallback: match the toplevel window and read `_GTK_FRAME_EXTENTS` |
 
 On Arch: `pacman -S at-spi2-core xdotool ffmpeg python-gobject`.
 On Debian/Ubuntu: `apt install at-spi2-core xdotool ffmpeg python3-gi`.
@@ -125,6 +147,7 @@ Then set `display` in the plugin settings (or leave it empty to use the Host's `
 |---|---|---|
 | `display` | empty → `$DISPLAY` → `:0` | target X display |
 | `dbusAddress` | empty → Host env | optional session-bus address when AT-SPI lives on a private bus (tests/CI) |
+| `atspiBusAddress` | empty → Host env | optional private accessibility bus (`AT_SPI_BUS_ADDRESS`), used by the tests/CI |
 | `screenshotDir` | empty → `screenshots/` | where PNG + sidecar JSON are written |
 | `fontFile` | `/usr/share/fonts/TTF/Hack-Bold.ttf` | badge font |
 | `maxDepth` | 24 | AT-SPI walk depth (Electron needs ≥24) |
@@ -133,6 +156,7 @@ Then set `display` in the plugin settings (or leave it empty to use the Host's `
 | `crop` | true | crop to the participating windows (no black desktop) |
 | `afterSeconds` | 1.0 | wait before the automatic re-screenshot (0–30) |
 | `keepImages` | 15 | generated image pairs kept on disk (curated screenshots are untouched) |
+| `gtk4OriginFallback` | true | repair GTK4 `SCREEN` extents from the X11 toplevel origin + `WINDOW` rectangles (needs `x11-utils`); when false, GTK4 apps are dropped with a warning |
 | `attachImage` | true | also expose the PNG as an attachment/image block when the Host supports it (each capture adds a durable attachment; turn off if storage matters more than inline vision) |
 | `enabledSessionIds` | empty | extra session ids allowed to use the tools |
 | `allowedWorkspacePaths` | empty → plugin dir | workspaces allowed to use the tools |
@@ -158,8 +182,11 @@ to look at the frame.
 
 ## Limitations
 
-- **GTK 4.24 on X11** reports `(0,0,w,h)` for every widget; coordinate numbering is impossible, so
-  the tool returns `E_NO_GEOMETRY` with the cropped evidence image.
+- **GTK 4.24 on X11** reports `(0,0,w,h)` for every widget; the X11-origin fallback repairs it via
+  `GetExtents(WINDOW)` + the toplevel origin. The fixture is pixel-exact; real libadwaita apps show
+  a 5–11 px residual and popovers ~8 px (measured in the [GTK4 report](docs/GTK4-GEOMETRY.md)), which
+  still lands inside the recorded control. The repair needs `x11-utils`; without it the app is
+  dropped with a warning instead of being mis-numbered.
 - **Electron** must run with `--force-renderer-accessibility` (as the WorkBuddy capture does) or
   its tree contains almost nothing.
 - Indices are only valid for the image they came from; a state change made outside the plugin
@@ -174,7 +201,7 @@ to look at the frame.
 
 ```bash
 make -C test fixtures          # build the Qt6 / GTK3 / GTK4 panels
-node test/integration.mjs      # 67 checks, starts its own Xvfb + private D-Bus + fixtures
+node test/integration.mjs      # 80 checks, starts its own Xvfb + private D-Bus + fixtures
 node test/reliability.mjs      # 30 attempts per operation
 node test/capture-screenshots.mjs
 ```

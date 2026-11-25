@@ -61,8 +61,25 @@ XTEST。
 7. 写 `<imageId>.png` 和 `<imageId>.json`（编号 → 角色/名字/矩形/中心/应用 pid/AT-SPI 路径，
    以及 screen/crop 元数据）。
 
-如果所有目标报同一个 `(x, y)`（GTK 4.24 在 X11 上就是这样），截图会返回 `E_NO_GEOMETRY`，同时
-仍写出裁剪后的证据图——坐标契约不能假装这些矩形可点。
+### GTK4 与 X11 原点回退
+
+GTK 4.24 的 AT-SPI 桥把所有 `SCREEN` 原点硬编码成 `(0, 0)`，`WINDOW` 矩形却是正确的
+（[完整调查](docs/GTK4-GEOMETRY.md)）。插件**按应用**识别这个特征（SCREEN 原点唯一、WINDOW 原点
+不止一个），并用
+
+```
+X11 顶层窗口内容原点 + GetExtents(WINDOW)
+```
+
+重算每个矩形；窗口通过 `xdotool search --pid` + `xwininfo`/`xprop` 匹配（有 `_GTK_FRAME_EXTENTS`
+时一并用于尺寸匹配和内容原点）。GTK4 一个 surface 就是一个 X 窗口，所以对话框、popover 各自
+独立换算。GTK3/Qt 的 SCREEN 原点本来就正确，不会进入这条路径。
+
+失败绝不静默：匹配不到 X 窗口时，该应用的编号目标会被**剔除**，返回结构化 warning
+（`E_NO_X11_UTILS`、`E_NO_X11_WINDOW`、`E_NO_X11_ORIGIN`）并置 `geometryTrusted: false`。因此
+GTK4 目标不会再被编号到 `(0,0)`、点击再打到屏幕左上角。配置
+`gtk4OriginFallback=false` 会关闭修复并用同样方式剔除该应用。逐应用处理之后还有全局守卫：
+如果剩余目标仍然全部共享同一个原点，整张图仍返回 `E_NO_GEOMETRY`。
 
 ## 截图
 
@@ -70,13 +87,17 @@ XTEST。
 |---|---|
 | ![Qt6](screenshots/qt6-panel.png) | ![GTK3](screenshots/gtk3-panel.png) |
 
-| GTK 4（无法取坐标） | WorkBuddy（Electron 真实应用） |
+| GTK 4（X11 原点回退） | GTK 4（关闭回退时的证据） |
 |---|---|
-| ![GTK4](screenshots/gtk4-no-geometry.png) | ![WorkBuddy](screenshots/workbuddy-numbered.png) |
+| ![GTK4 numbered](screenshots/gtk4-numbered.png) | ![GTK4 refused](screenshots/gtk4-no-geometry.png) |
+
+| WorkBuddy（Electron 真实应用） |
+|---|
+| ![WorkBuddy](screenshots/workbuddy-numbered.png) |
 
 每张 fixture 图里都有它自己的计数行（`clicks=… dclicks=… drags=… wheel=… text='…'`），数值与
-每次标号操作后通过 AT-SPI 回读的状态一致。GTK 4 对所有控件报 `(0,0,w,h)`，插件宁可不画徽章并
-返回 `E_NO_GEOMETRY`，上面的 GTK4 图就是未编号的证据截图。
+每次标号操作后通过 AT-SPI 回读的状态一致。GTK4 那张使用 X11 原点回退；第二张是关闭回退时的
+守卫结果（`E_NO_GEOMETRY`、应用被剔除、不画徽章）。
 
 ## 安装
 
@@ -89,6 +110,7 @@ XTEST。
 | `python3` + `python-gobject`（`gi.repository.Atspi`） | AT-SPI 枚举 |
 | `xdotool` | XTEST 点击、拖拽、滚轮、键盘 |
 | `ffmpeg` | `x11grab` 截图 + `drawtext` 徽章 |
+| `x11-utils`（`xwininfo`、`xprop`） | GTK4 的 X11 原点回退：匹配顶层窗口并读取 `_GTK_FRAME_EXTENTS` |
 
 Arch：`pacman -S at-spi2-core xdotool ffmpeg python-gobject`；
 Debian/Ubuntu：`apt install at-spi2-core xdotool ffmpeg python3-gi`。
@@ -114,6 +136,7 @@ dsh plugin --profile web add /path/to/dsh-ui-automation
 |---|---|---|
 | `display` | 空 → `$DISPLAY` → `:0` | 目标 X display |
 | `dbusAddress` | 空 → Host 环境 | AT-SPI 在私有总线时填写（测试/CI 用） |
+| `atspiBusAddress` | 空 → Host 环境 | 可选：私有 a11y 总线地址（`AT_SPI_BUS_ADDRESS`），测试/CI 用 |
 | `screenshotDir` | 空 → `screenshots/` | PNG + sidecar JSON 目录 |
 | `fontFile` | Hack-Bold.ttf | 徽章字体 |
 | `maxDepth` | 24 | AT-SPI 遍历深度（Electron 需要 ≥24） |
@@ -122,6 +145,7 @@ dsh plugin --profile web add /path/to/dsh-ui-automation
 | `crop` | true | 按窗口并集裁剪（去掉黑桌面） |
 | `afterSeconds` | 1.0 | 操作后重新截图前的等待（0–30） |
 | `keepImages` | 15 | 保留最近多少组生成的图片（精选截图不受影响） |
+| `gtk4OriginFallback` | true | 用 X11 顶层原点 + `WINDOW` 矩形修复 GTK4 的 SCREEN 坐标（需要 `x11-utils`）；关闭后 GTK4 应用会被剔除并给出 warning |
 | `attachImage` | true | Host 支持时同时把 PNG 作为 attachment/图片块返回（每次截图会存一份 attachment，介意存储可关闭） |
 | `enabledSessionIds` | 空 | 额外放行的会话 ID |
 | `allowedWorkspacePaths` | 空 → 插件目录 | 放行的工作区 |
@@ -142,8 +166,10 @@ PNG 还会经 `saveImage()` 保存并以 `image` content block 返回；如果�
 
 ## 已知边界
 
-- **GTK 4.24（X11）** 对所有控件报 `(0,0,w,h)`，无法坐标编号，插件返回 `E_NO_GEOMETRY` 和裁剪后的
-  证据图。
+- **GTK 4.24（X11）** 对所有控件报 `(0,0,w,h)`；X11 原点回退用 `GetExtents(WINDOW)` + 顶层原点修复。
+  fixture 逐像素精确；真实 libadwaita 应用实测仍有 5–11px 残差、popover ~8px（见
+  [GTK4 报告](docs/GTK4-GEOMETRY.md)），仍在控件命中范围内。回退依赖 `x11-utils`；缺失时应用会被
+  剔除并 warning，而不是错编号。
 - **Electron** 必须带 `--force-renderer-accessibility`（WorkBuddy 截图即如此），否则树里几乎为空。
 - 编号只在对应图片内有效；插件之外发生的状态变化需要重新 `ui_screenshot`。
 - 很小的控件（单选按钮等）会编号，但点击目标仍然小；点击永远用记录的中心点。
@@ -155,7 +181,7 @@ PNG 还会经 `saveImage()` 保存并以 `image` content block 返回；如果�
 
 ```bash
 make -C test fixtures          # 编译 Qt6 / GTK3 / GTK4 面板
-node test/integration.mjs      # 67 项断言，自己起 Xvfb + 私有 D-Bus + fixture
+node test/integration.mjs      # 80 项断言，自己起 Xvfb + 私有 D-Bus + fixture
 node test/reliability.mjs      # 每类操作 30 次
 node test/capture-screenshots.mjs
 ```

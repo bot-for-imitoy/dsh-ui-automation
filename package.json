@@ -1,6 +1,6 @@
 {
   "name": "dsh-ui-automation",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "description": "Linux-only numbered-image UI control for DSH: screenshot a display with yellow numbered badges, then click, double-click, scroll, drag and type by index; every action returns the next numbered image.",
   "license": "MIT",
@@ -49,7 +49,9 @@
     "test/smoke.mjs",
     "test/capture-screenshots.mjs",
     "test/lib",
-    "test/fixtures"
+    "test/fixtures",
+    "docs",
+    "test/gtk4-probe"
   ],
   "scripts": {
     "fixtures": "make -C test fixtures",
