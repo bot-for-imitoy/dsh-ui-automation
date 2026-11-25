@@ -22,13 +22,13 @@
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:__OWNER__/dsh-ui-automation
+dsh plugin --profile web add github:bot-for-imitoy/dsh-ui-automation
 ```
 
 ### 从本地目录安装
 
 ```bash
-git clone https://github.com/__OWNER__/dsh-ui-automation.git
+git clone https://github.com/bot-for-imitoy/dsh-ui-automation.git
 dsh plugin --profile web add ./dsh-ui-automation
 ```
 

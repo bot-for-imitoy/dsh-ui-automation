@@ -48,9 +48,9 @@ attaches to the user's real windows.
 
 Screenshots from the verification run:
 
-- https://github.com/__OWNER__/dsh-ui-automation/blob/main/screenshots/qt6-panel.png
-- https://github.com/__OWNER__/dsh-ui-automation/blob/main/screenshots/gtk3-panel.png
-- https://github.com/__OWNER__/dsh-ui-automation/blob/main/screenshots/gtk4-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/qt6-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk3-panel.png
+- https://github.com/bot-for-imitoy/dsh-ui-automation/blob/main/screenshots/gtk4-panel.png
 
 ## Checklist
 
@@ -58,4 +58,4 @@ Screenshots from the verification run:
 - [x] `dsh.bundle.patch` manifest (`cordis.patch.yml`)
 - [x] `dsh-plugin` topic
 - [x] installation documented for both `github:owner/repo` and a local checkout
-- [x] only adds `data/plugins/__OWNER____dsh-ui-automation.yml`
+- [x] only adds `data/plugins/bot-for-imitoy__dsh-ui-automation.yml`

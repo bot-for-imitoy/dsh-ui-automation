@@ -1,5 +1,5 @@
-url: https://github.com/__OWNER__/dsh-ui-automation
-name: __OWNER__/dsh-ui-automation
+url: https://github.com/bot-for-imitoy/dsh-ui-automation
+name: bot-for-imitoy/dsh-ui-automation
 category: tools
 description:
   en: "Drives GUI applications inside isolated headless Xvfb sandboxes through AT-SPI with an XTEST fallback, and verifies every click, drag, scroll and key press by reading the application state back."

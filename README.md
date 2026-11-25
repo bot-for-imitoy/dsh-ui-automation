@@ -60,7 +60,7 @@ On Debian/Ubuntu: `apt install xvfb dbus at-spi2-core xdotool ffmpeg python3-gi`
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:__OWNER__/dsh-ui-automation
+dsh plugin --profile web add github:bot-for-imitoy/dsh-ui-automation
 ```
 
 Restart DSH if the plugin does not appear immediately. The plugin row is called
@@ -69,7 +69,7 @@ Restart DSH if the plugin does not appear immediately. The plugin row is called
 ### From a local checkout
 
 ```bash
-git clone https://github.com/__OWNER__/dsh-ui-automation.git
+git clone https://github.com/bot-for-imitoy/dsh-ui-automation.git
 dsh plugin --profile web add ./dsh-ui-automation
 ```
 
