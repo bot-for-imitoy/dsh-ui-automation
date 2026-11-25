@@ -172,6 +172,39 @@ unless you really want every conversation to be able to click arbitrary windows.
 Treat it as a powerful local input device, not a sandbox: it does not isolate processes, and a
 misnumbered click is a real click.
 
+## Cross-plugin suppression (2.2.0)
+
+A wrapper that owns a natural-language entry point can take the tool surface over, so ordinary
+Sessions never see the six raw tools and must go through the wrapper:
+
+- **Service.** The plugin publishes `ctx.uiAutomationVisibility` (`lib/visibility.js`), a
+  reference-counted switch: `suppress(key, applies?)` → idempotent `release()`, `release(key)`,
+  `suppressed()` → boolean, `suppresses(sessionId, agent)` → the predicate verdict, and
+  `activeKeys()` → active suppressor ids.
+- **Effect.** While a suppressor's `applies(sessionId, agent)` matches,
+  `ui_screenshot`/`ui_click`/`ui_double_click`/`ui_scroll`/`ui_drag`/`ui_type` (and the
+  numbered-image prompt section) are hidden from that Session. Sessions whose header `origin` is
+  `subagent` are never suppressed, so a wrapper's child still drives the desktop.
+- **Scoped, not global.** A suppressor normally passes its own gate as `applies`, so only the
+  Sessions that may use the wrapper's tool lose the raw tools; a Session outside the wrapper's
+  allow-list keeps them instead of ending up with no UI control at all.
+- **Lifecycle.** The controller is owned by this plugin's fiber: unloading `dsh-ui-automation`
+  removes it. A suppressor calls `suppress(key, applies)` inside an effect and keeps the returned
+  release function; unloading or disabling the suppressor releases it and the raw tools come back.
+- **Standalone behavior is unchanged.** With no suppressor (only this plugin installed), every
+  gate in the table above behaves exactly as in 2.1.0. `allowAllSessions` is never consulted by
+  the suppression — a wrapper does not widen this plugin's own allow-list.
+
+[dsh-ui-nl](../dsh-ui-nl/README.md) is the reference suppressor: it enables
+`hideUnderlyingTools` by default and releases on unload.
+
+### Rolling back
+
+- **Keep both plugins installed, show both surfaces:** set `hideUnderlyingTools: false` on the
+  `ui-nl` row (or remove `dsh-ui-nl`). The six tools reappear for every allow-listed Session.
+- **Back to the pre-2.2.0 behavior:** uninstall `dsh-ui-nl`; this plugin's code path is
+  unchanged, so the tools are visible by the same three gates as before.
+
 ## Image return
 
 Every result carries `imagePath` and a text index list. When a `ctx.attachments` service exists and
@@ -202,7 +235,8 @@ to look at the frame.
 ```bash
 make -C test fixtures          # build the Qt6 / GTK3 / GTK4 panels
 node test/integration.mjs      # 80 checks, starts its own Xvfb + private D-Bus + fixtures
-node test/reliability.mjs      # 30 attempts per operation
+node test/reliability.mjs      # 30 attempts per operation (100% on Qt3/GTK3/GTK4)
+node test/visibility.mjs       # 20 checks for the cross-plugin suppression switch
 node test/capture-screenshots.mjs
 ```
 

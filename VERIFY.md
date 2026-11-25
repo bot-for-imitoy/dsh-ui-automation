@@ -1,6 +1,8 @@
 # 验证记录（真机）：标号图片 + 索引操作 + GTK4 原点回退
 
-> 验证时间：2026-11-25（v2.1.0）
+> 验证时间：2026-11-25（v2.2.0；跨插件抑制新增 `test/visibility.mjs` 20/20，集成矩阵仍 80/80，
+> 可靠性 15 组 × 30 次仍 100%；v2.2.0 只新增 `uiAutomationVisibility` 服务与 `when` 里的一次判定，
+> 没有改动编号/GTK4 路径）
 > 环境：Arch Linux / Xvfb 21.1.26 / at-spi2-core 2.62.2 / Qt 6.12.0 / GTK 3.24.52 / GTK 4.24.1 / xdotool 4.0 / x11-utils（xwininfo、xprop）/ ffmpeg / python-gobject / Node v26.13.1
 > GTK4 根因与方案调查报告：[docs/GTK4-GEOMETRY.md](docs/GTK4-GEOMETRY.md)；实验脚本：[test/gtk4-probe/](test/gtk4-probe/)
 > 所有数字均来自本机实际运行；原始输出在 `test/out/`，可重跑。

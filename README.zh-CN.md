@@ -158,6 +158,23 @@ dsh plugin --profile web add /path/to/dsh-ui-automation
 
 把它当成一台强力的本机输入设备，而不是沙盒：它不做进程隔离，点错编号就是真的点错。
 
+## 跨插件抑制（2.2.0）
+
+如果有一个封装插件接管了自然语言入口，它可以接管工具面：普通会话不再看到六个原始工具，只能走封装插件。
+
+- **服务。** 插件发布 `ctx.uiAutomationVisibility`（`lib/visibility.js`），一个引用计数的开关：`suppress(key, applies?)` → 幂等的 `release()`、`release(key)`、`suppressed()` → 布尔、`suppresses(sessionId, agent)` → 判定结果、`activeKeys()` → 当前抑制者 id。
+- **生效范围。** 当某个抑制者的 `applies(sessionId, agent)` 命中时，`ui_screenshot`/`ui_click`/`ui_double_click`/`ui_scroll`/`ui_drag`/`ui_type`（以及标号图片提示段）对该会话隐藏。header `origin` 为 `subagent` 的会话永不抑制，所以封装插件的子代理仍然能操作桌面。
+- **按范围而不是全局。** 抑制者通常把自己的门禁作为 `applies` 传进来：只有能调用封装工具的会话会失去原始工具；门禁之外的会话保留原始工具，不会变成"两套都没有"。
+- **生命周期。** 控制器属于本插件 fiber：卸载 `dsh-ui-automation` 会移除它。抑制者在 effect 里调用 `suppress(key, applies)` 并保留返回的 release；卸载/禁用抑制者时释放，原始工具恢复可见。
+- **单独安装行为不变。** 没有抑制者时（只装本插件），上表的每个开关行为与 2.1.0 完全一致；抑制逻辑从不读取 `allowAllSessions`——封装插件不会放宽本插件自己的白名单。
+
+[dsh-ui-nl](../dsh-ui-nl/README.zh-CN.md) 是参考抑制者：默认开启 `hideUnderlyingTools`，卸载时释放。
+
+### 回滚方式
+
+- **两个插件都留、恢复两套工具面：** 在 `ui-nl` 行设置 `hideUnderlyingTools: false`（或移除 `dsh-ui-nl`），六个工具会重新对允许的会话可见。
+- **回到 2.2.0 之前：** 卸载 `dsh-ui-nl`；本插件代码路径不变，工具可见性仍由原来的三个开关决定。
+
 ## 图片返回
 
 每个结果都带 `imagePath` 和文本索引清单。存在 `ctx.attachments` 服务且 `attachImage=true` 时，
@@ -182,7 +199,8 @@ PNG 还会经 `saveImage()` 保存并以 `image` content block 返回；如果�
 ```bash
 make -C test fixtures          # 编译 Qt6 / GTK3 / GTK4 面板
 node test/integration.mjs      # 80 项断言，自己起 Xvfb + 私有 D-Bus + fixture
-node test/reliability.mjs      # 每类操作 30 次
+node test/reliability.mjs      # 每类操作 30 次（Qt6/GTK3/GTK4 均为 100%）
+node test/visibility.mjs       # 跨插件抑制开关的 20 项断言
 node test/capture-screenshots.mjs
 ```
 
