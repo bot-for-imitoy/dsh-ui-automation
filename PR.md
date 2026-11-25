@@ -37,12 +37,19 @@ attaches to the user's real windows.
 
 ## How it is verified
 
-- `test/integration.mjs`: 104/104 checks on real Qt 6, GTK 3 and GTK 4
-  applications — semantic and coordinate addressing, double-click, 12-step
-  drag, wheel, ASCII/CJK text via AT-SPI and XTEST, key chords, screenshots,
-  parallel isolation, launch-failure paths and tool entry points.
-- `test/reliability.mjs`: 480 operations (16 groups × 30), 0 failures;
-  per-group success rate and mean/p50/p95/max latency in `VERIFY.md`.
+- `test/integration.mjs`: **56/56 checks** with the two fixtures shipped in
+  this repository (Qt 6 and GTK 3) — semantic and coordinate addressing,
+  double-click, 12-step drag, wheel, ASCII/CJK text via AT-SPI and XTEST, key
+  chords, screenshots, parallel isolation, launch-failure paths and tool entry
+  points. Pointing `XVFB_PROBE_DIR` at the three external research probes
+  (Qt 6 / GTK 3 / GTK 4) raises it to 104/104; both runs are recorded in
+  `VERIFY.md`. Only the 56-check run is reproducible from this repository
+  alone, which is why it is the headline number.
+- `test/reliability.mjs`: **300 operations (10 groups × 30), 0 failures** on
+  the shipped fixtures, mean 118–782 ms and p95 ≤ 805 ms per group; the
+  480-operation (16 groups) figure in `VERIFY.md` includes those external
+  probes. Per-group success rate and mean/p50/p95/max latency are tabulated
+  there.
 - Every assertion reads the fixture's own counter label over AT-SPI, so a PASS
   means the application really changed state.
 
