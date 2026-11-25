@@ -28,7 +28,7 @@ async function fixtureShot({ key, command, appName, out, scenario }) {
     pluginDir,
   })
   try {
-    await env.waitForApp({ pid: app.pid })
+    await env.waitForApp({ pid: app.pid, statusApp: appName })
     let shot = await automation.screenshot()
     if (shot.ok !== true) throw new Error(`screenshot failed: ${shot.code} ${shot.error}`)
     if (scenario) shot = await scenario(automation, shot)
@@ -86,23 +86,36 @@ async function gtk3Shot() {
   })
 }
 
-async function gtk4Shot() {
+async function gtk4Shots() {
   const env = await TestDisplay.start()
   const app = env.launch([path.join(fixtureDir, 'panel_gtk4')])
   const automation = new Automation({
-    getConfig: () => env.config({ screenshotDir: 'test/out/capture' }),
+    getConfig: () => env.config({ screenshotDir: 'test/out/capture', afterSeconds: 0.2 }),
     pluginDir,
   })
   try {
-    await env.waitForApp({ pid: app.pid })
-    const shot = await automation.screenshot()
-    if (shot.imagePath === undefined || !existsSync(shot.imagePath)) {
-      throw new Error(`GTK4 evidence image missing: ${shot.code} ${shot.error}`)
+    await env.waitForApp({ pid: app.pid, statusApp: 'panel_gtk4' })
+    const button = (await automation.screenshot()).targets.find(target => target.name === '点击 Click')
+    let shot = await automation.click({ index: button.index, afterSeconds: 0.2 })
+    if (shot.ok !== true) throw new Error(`GTK4 numbered capture failed: ${shot.code} ${shot.error}`)
+    const numbered = path.join(outDir, 'gtk4-numbered.png')
+    copyFileSync(shot.imagePath, numbered)
+    console.log(`wrote ${numbered} (${shot.image.width}×${shot.image.height}, ${shot.targetCount} targets)`)
+
+    // Fallback disabled: the app is refused and the unnumbered evidence frame
+    // is kept, which is exactly what the guard should look like.
+    const disabled = new Automation({
+      getConfig: () => env.config({ screenshotDir: 'test/out/capture', gtk4OriginFallback: false }),
+      pluginDir,
+    })
+    const refused = await disabled.screenshot()
+    if (refused.imagePath === undefined || !existsSync(refused.imagePath)) {
+      throw new Error(`GTK4 refusal evidence missing: ${refused.code} ${refused.error}`)
     }
-    const destination = path.join(outDir, 'gtk4-no-geometry.png')
-    copyFileSync(shot.imagePath, destination)
-    console.log(`wrote ${destination} (${shot.code}: ${shot.error})`)
-    return { path: destination, code: shot.code }
+    const evidence = path.join(outDir, 'gtk4-no-geometry.png')
+    copyFileSync(refused.imagePath, evidence)
+    console.log(`wrote ${evidence} (${refused.code})`)
+    return { numbered, evidence, targets: shot.targetCount }
   } finally {
     await env.stop()
   }
@@ -147,7 +160,7 @@ async function workbuddyShot() {
 const summary = {}
 if (wanted('qt')) summary.qt = await qtShot()
 if (wanted('gtk3')) summary.gtk3 = await gtk3Shot()
-if (wanted('gtk4')) summary.gtk4 = await gtk4Shot()
+if (wanted('gtk4')) summary.gtk4 = await gtk4Shots()
 if (wanted('workbuddy')) summary.workbuddy = await workbuddyShot()
 
 console.log(JSON.stringify(summary, null, 2))

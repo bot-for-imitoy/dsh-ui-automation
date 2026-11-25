@@ -54,7 +54,8 @@ static void name_widget(GtkWidget *w, const char *name)
 static void draw_gray(GtkDrawingArea *w, cairo_t *cr, int width, int height, gpointer d)
 {
     (void)w; (void)d; (void)width; (void)height;
-    cairo_set_source_rgb(cr, 0.85, 0.85, 0.85);
+    /* A unique colour so the test can locate this area pixel-exactly. */
+    cairo_set_source_rgb(cr, 0.20, 0.40, 0.80);
     cairo_paint(cr);
 }
 
@@ -65,7 +66,7 @@ int main(int argc, char **argv)
 
     GtkWidget *win = gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(win), "GTK4 Panel");
-    gtk_window_set_default_size(GTK_WINDOW(win), 460, 420);
+    gtk_window_set_default_size(GTK_WINDOW(win), 460, 560);
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_margin_start(box, 8);
@@ -89,9 +90,19 @@ int main(int argc, char **argv)
     gtk_box_append(GTK_BOX(box), g_check);
 
     GtkWidget *area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(area, -1, 120);
+    gtk_widget_set_size_request(area, -1, 80);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(area), draw_gray, NULL, NULL);
     gtk_box_append(GTK_BOX(box), area);
+
+    /* Three extra named controls give the numbered image >= 6 targets. They
+     * are plain buttons (a GtkDrawingArea's accessible name is not settable via
+     * GTK_ACCESSIBLE_PROPERTY_LABEL) and intentionally have no action. */
+    const char *area_names[] = { "dragarea", "dblarea", "wheelarea" };
+    for (guint i = 0; i < G_N_ELEMENTS(area_names); i++) {
+        GtkWidget *named = gtk_button_new_with_label(area_names[i]);
+        name_widget(named, area_names[i]);
+        gtk_box_append(GTK_BOX(box), named);
+    }
 
     g_status = gtk_label_new("");
     gtk_box_append(GTK_BOX(box), g_status);

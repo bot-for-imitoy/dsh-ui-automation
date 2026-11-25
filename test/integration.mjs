@@ -42,7 +42,7 @@ async function runFixture(def) {
   }
 
   try {
-    await env.waitForApp({ pid: app.pid })
+    await env.waitForApp({ pid: app.pid, statusApp: def.appName })
     record('fixture visible on AT-SPI', true, `${def.appName} pid ${app.pid}`)
 
     // ---- screenshot ---------------------------------------------------
@@ -173,22 +173,187 @@ async function runFixture(def) {
   }
 }
 
-async function runGtk4Limit() {
-  checks.section('GTK4 geometry limit (reproducible E_NO_GEOMETRY)')
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Bounding box of an exact RGB colour in a raw RGB24 frame. */
+function colorBBox(buffer, width, height, rgb) {
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 3
+      if (buffer[offset] === rgb[0] && buffer[offset + 1] === rgb[1] && buffer[offset + 2] === rgb[2]) {
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  return maxX < 0 ? null : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+}
+
+function warningCodes(value) {
+  return (value.warnings || []).map(warning => warning.code)
+}
+
+async function runGtk4Fallback() {
+  checks.section('GTK4 X11-origin fallback')
   const env = await TestDisplay.start()
   const app = env.launch([path.join(fixtureDir, 'panel_gtk4')])
   const automation = new Automation({ getConfig: () => env.config(), pluginDir })
   try {
-    await env.waitForApp({ pid: app.pid })
+    await env.waitForApp({ pid: app.pid, statusApp: 'panel_gtk4' })
+    const first = await automation.screenshot()
+    checks.check('GTK4 is numbered instead of refused',
+      first.ok === true && first.geometryTrusted === true && first.targetCount >= 6,
+      `${first.ok ? 'ok' : first.code}; ${first.targetCount} targets; fallback=${JSON.stringify(first.stats?.gtk4Fallback)}`)
+    checks.check('every GTK4 target carries rectSource=x11-origin+window',
+      first.targets?.length > 0 && first.targets.every(target => target.rectSource === 'x11-origin+window'),
+      `sources: ${[...new Set(first.targets.map(target => target.rectSource))].join(', ')}`)
+
+    const buttonName = '点击 Click'
+    const buttonIndex = indexOf(first.targets, buttonName)
+    const before = statusOf(env, 'panel_gtk4')
+    const clicked = await automation.click({ index: buttonIndex, afterSeconds: 0.2 })
+    const after = statusOf(env, 'panel_gtk4')
+    checks.check('GTK4 click by index increments the fixture counter',
+      clicked.ok === true && after.clicks === before.clicks + 1,
+      `#${buttonIndex} clicks ${before.clicks} → ${after.clicks}`, clicked.totalMs)
+
+    // ---- move the window: rects must follow, never a cached offset ----
+    env.moveWindow(app.pid, 200, 150)
+    await sleep(400)
+    const moved = await automation.screenshot()
+    const byName = new Map(first.targets.map(target => [target.name || target.label, target.rect]))
+    let shifted = 0
+    for (const target of moved.targets) {
+      const original = byName.get(target.name || target.label)
+      if (original === undefined) continue
+      if (target.rect[0] === original[0] + 200 && target.rect[1] === original[1] + 150) shifted += 1
+    }
+    checks.check('moving the window shifts every rect by exactly (+200,+150)',
+      moved.ok === true && shifted >= 6 && moved.crop.x === 200 && moved.crop.y === 150,
+      `${shifted} targets shifted; crop=(${moved.crop.x},${moved.crop.y},${moved.crop.width},${moved.crop.height})`)
+
+    const movedButton = moved.targets.find(target => (target.name || target.label) === buttonName)
+    const movedBefore = statusOf(env, 'panel_gtk4')
+    const movedClick = await automation.click({ index: movedButton.index, afterSeconds: 0.2 })
+    const movedAfter = statusOf(env, 'panel_gtk4')
+    checks.check('click after the move still lands on the button',
+      movedClick.ok === true && movedAfter.clicks === movedBefore.clicks + 1,
+      `#${movedButton.index} clicks ${movedBefore.clicks} → ${movedAfter.clicks}`)
+
+    // ---- pixel-level accuracy: the grey 444x80 area ----
+    const raw = env.rawScreen('/tmp/dsh-ui-gtk4-raw.rgb')
+    const pixels = readFileSync(raw.path)
+    const bbox = colorBBox(pixels, raw.width, raw.height, [51, 102, 204])
+    const expected = { x: 200 + 8, y: 150 + 122, width: 444, height: 80 }
+    const delta = bbox === null ? null : Math.max(
+      Math.abs(bbox.x - expected.x), Math.abs(bbox.y - expected.y),
+      Math.abs(bbox.width - expected.width), Math.abs(bbox.height - expected.height),
+    )
+    checks.check('pixel-level error of the derived geometry is 0–2 px',
+      bbox !== null && delta <= 2,
+      bbox === null ? 'grey area not found' : `bbox=${JSON.stringify(bbox)} expected≈${JSON.stringify(expected)} maxΔ=${delta}px`)
+    report.gtk4 = { imagePath: moved.imagePath, targets: moved.targetCount, bbox, expected, delta }
+
+    // ---- the same capture with the fallback disabled ----
+    const disabled = new Automation({
+      getConfig: () => env.config({ gtk4OriginFallback: false }),
+      pluginDir,
+    })
+    const refused = await disabled.screenshot()
+    checks.check('gtk4OriginFallback=false refuses the GTK4 app',
+      refused.ok === false && refused.code === 'E_NO_GEOMETRY'
+        && warningCodes(refused).includes('E_GTK4_FALLBACK_DISABLED')
+        && (refused.targets?.length ?? 0) === 0,
+      `${refused.code}: ${refused.error}`)
+    checks.check('refused GTK4 leaves no usable indices', disabled.latestFor(env.display) === undefined, 'latest invalidated')
+  } finally {
+    await env.stop()
+  }
+}
+
+async function runMixed() {
+  checks.section('Mixed desktop: Qt6 + GTK3 + GTK4')
+  const env = await TestDisplay.start({ width: 1440, height: 900 })
+  const qt = env.launch([path.join(fixtureDir, 'panel_qt')])
+  const gtk3 = env.launch([path.join(fixtureDir, 'panel_gtk3')])
+  const gtk4 = env.launch([path.join(fixtureDir, 'panel_gtk4')])
+  const automation = new Automation({ getConfig: () => env.config(), pluginDir })
+  const expectedApps = { panel_qt: 'button', panel_gtk3: 'button', panel_gtk4: '点击 Click' }
+  try {
+    for (const [app, statusApp] of [[qt, 'panel_qt'], [gtk3, 'panel_gtk3'], [gtk4, 'panel_gtk4']]) {
+      await env.waitForApp({ pid: app.pid, statusApp })
+    }
+    env.moveWindow(qt.pid, 20, 20)
+    env.moveWindow(gtk3.pid, 520, 20)
+    env.moveWindow(gtk4.pid, 20, 320)
+    await sleep(500)
+
     const shot = await automation.screenshot()
-    checks.check('GTK4 screenshot is refused with E_NO_GEOMETRY',
-      shot.ok === false && shot.code === 'E_NO_GEOMETRY' && shot.geometryTrusted === false,
-      `${shot.code}: ${shot.error}`)
-    checks.check('evidence image is still written',
-      exists(shot.imagePath) && shot.targets.length >= 3,
-      `${shot.imagePath} (${shot.targets?.length} targets, no badges)`)
-    checks.check('no stale indices are kept', automation.latestFor(env.display) === undefined, 'latest image invalidated')
-    report.gtk4 = { imagePath: shot.imagePath, targets: shot.targets?.length, code: shot.code }
+    checks.check('all three toolkits are numbered together',
+      shot.ok === true && shot.geometryTrusted === true
+        && Object.keys(expectedApps).every(name => shot.targets.some(target => target.appName === name)),
+      `${shot.targetCount} targets; apps=${[...new Set(shot.targets.map(target => target.appName))].join(', ')}`)
+
+    const buttons = {}
+    for (const [appName, name] of Object.entries(expectedApps)) {
+      const target = shot.targets.find(candidate => candidate.appName === appName && (candidate.name || candidate.label) === name)
+      buttons[appName] = target
+    }
+    checks.check('each toolkit has a clickable button target',
+      Object.values(buttons).every(Boolean),
+      Object.entries(buttons).map(([app, target]) => `${app}:#${target?.index}@(${target?.center})`).join(' '))
+    checks.check('targets are not all collapsed onto the top-left corner',
+      Object.values(buttons).every(target => target.center[0] + target.center[1] > 40)
+        && new Set(Object.values(buttons).map(target => target.center.join(','))).size === 3,
+      `centres: ${Object.values(buttons).map(target => `(${target.center})`).join(' ')}`)
+
+    // click each app's button in turn, always resolving against the latest image
+    let latest = shot
+    for (const [appName, name] of Object.entries(expectedApps)) {
+      const before = Object.fromEntries(Object.keys(expectedApps).map(app => [app, statusOf(env, app)]))
+      const target = latest.targets.find(candidate => candidate.appName === appName && (candidate.name || candidate.label) === name)
+      const result = await automation.click({ index: target.index, afterSeconds: 0.2 })
+      latest = result
+      const after = Object.fromEntries(Object.keys(expectedApps).map(app => [app, statusOf(env, app)]))
+      const othersUnchanged = Object.keys(expectedApps)
+        .filter(other => other !== appName)
+        .every(other => after[other].clicks === before[other].clicks)
+      checks.check(`click lands on ${appName} only`,
+        result.ok === true && after[appName].clicks === before[appName].clicks + 1 && othersUnchanged,
+        `#${target.index} @(${target.center}) → ${appName} clicks ${before[appName].clicks} → ${after[appName].clicks}; others=${Object.keys(expectedApps).filter(other => other !== appName).map(other => `${other}:${before[other].clicks}→${after[other].clicks}`).join(',')}`)
+    }
+
+    // fallback disabled on the same mixed screen: only GTK4 is refused
+    const disabled = new Automation({
+      getConfig: () => env.config({ gtk4OriginFallback: false }),
+      pluginDir,
+    })
+    const withoutFallback = await disabled.screenshot()
+    const gtk4Targets = (withoutFallback.targets || []).filter(target => target.appName === 'panel_gtk4')
+    checks.check('fallback disabled drops only the GTK4 app',
+      withoutFallback.ok === true && gtk4Targets.length === 0
+        && warningCodes(withoutFallback).includes('E_GTK4_FALLBACK_DISABLED')
+        && withoutFallback.geometryTrusted === false,
+      `${withoutFallback.targetCount} remaining targets; warnings=${warningCodes(withoutFallback).join(', ')}`)
+    const qTarget = withoutFallback.targets.find(target => target.appName === 'panel_qt'
+      && (target.name || target.label) === 'button')
+    const qBefore = statusOf(env, 'panel_qt')
+    const qClick = qTarget === undefined ? { ok: false } : await disabled.click({ index: qTarget.index, afterSeconds: 0.2 })
+    const qAfter = statusOf(env, 'panel_qt')
+    checks.check('other toolkits stay clickable with the fallback disabled',
+      qClick.ok === true && qAfter.clicks === qBefore.clicks + 1,
+      `Qt clicks ${qBefore.clicks} → ${qAfter.clicks}`)
+    report.mixed = {
+      targets: shot.targetCount,
+      apps: [...new Set(shot.targets.map(target => target.appName))],
+      buttons: Object.fromEntries(Object.entries(buttons).map(([app, target]) => [app, target.center])),
+    }
   } finally {
     await env.stop()
   }
@@ -206,7 +371,8 @@ const appDefs = [
 ]
 
 for (const def of appDefs) await runFixture(def)
-await runGtk4Limit()
+await runGtk4Fallback()
+await runMixed()
 
 const ok = checks.summary()
 mkdirSync('test/out', { recursive: true })

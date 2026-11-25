@@ -82,10 +82,11 @@ async function runFixture(def) {
   const app = env.launch([def.command])
   const automation = new Automation({ getConfig: () => env.config(), pluginDir })
   try {
-    await env.waitForApp({ pid: app.pid })
+    await env.waitForApp({ pid: app.pid, statusApp: def.appName })
     const initial = await automation.screenshot()
     if (initial.ok !== true) throw new Error(`initial screenshot failed: ${initial.code} ${initial.error}`)
     const initialBy = name => indexOf(initial.targets, name)
+    const wanted = def.ops ?? ['screenshot', 'click', 'double_click', 'drag', 'scroll', 'type']
 
     // ---- screenshot ---------------------------------------------------
     const shotRows = []
@@ -98,7 +99,7 @@ async function runFixture(def) {
         detail: `${shot.code || 'ok'} targets=${shot.targetCount} ${shot.image?.width}×${shot.image?.height}`,
       })
     }
-    report(def, 'screenshot', shotRows)
+    if (wanted.includes('screenshot')) report(def, 'screenshot', shotRows)
 
     // ---- click --------------------------------------------------------
     const clickRows = []
@@ -114,11 +115,11 @@ async function runFixture(def) {
       })
       if (click.ok === true) latest = click
     }
-    report(def, 'click', clickRows)
+    if (wanted.includes('click')) report(def, 'click', clickRows)
 
     // ---- double click -------------------------------------------------
     const dblRows = []
-    for (let i = 0; i < N; i += 1) {
+    for (let i = 0; i < (wanted.includes('double_click') ? N : 0); i += 1) {
       const before = statusOf(env, def.appName)
       const dbl = await automation.doubleClick({ index: initialBy('dblarea'), intervalMs: 120, afterSeconds: 0.2 })
       const after = dbl.ok === true ? await waitForStatus(env, def.appName, status => status.dclicks === before.dclicks + 1) : before
@@ -128,11 +129,11 @@ async function runFixture(def) {
         detail: `dclicks ${before.dclicks} → ${after.dclicks} (${dbl.code || 'ok'})`,
       })
     }
-    report(def, 'double_click', dblRows)
+    if (wanted.includes('double_click')) report(def, 'double_click', dblRows)
 
     // ---- drag ---------------------------------------------------------
     const dragRows = []
-    for (let i = 0; i < N; i += 1) {
+    for (let i = 0; i < (wanted.includes('drag') ? N : 0); i += 1) {
       const before = statusOf(env, def.appName)
       const drag = await automation.drag({ fromIndex: initialBy('dragarea'), toIndex: initialBy('wheelarea'), steps: 10, afterSeconds: 0.2 })
       const after = drag.ok === true ? await waitForStatus(env, def.appName, status => status.drags === before.drags + 1) : before
@@ -142,11 +143,11 @@ async function runFixture(def) {
         detail: `drags ${before.drags} → ${after.drags}, dist=${after.dragdist} (${drag.code || 'ok'})`,
       })
     }
-    report(def, 'drag', dragRows)
+    if (wanted.includes('drag')) report(def, 'drag', dragRows)
 
     // ---- scroll -------------------------------------------------------
     const scrollRows = []
-    for (let i = 0; i < N; i += 1) {
+    for (let i = 0; i < (wanted.includes('scroll') ? N : 0); i += 1) {
       const before = statusOf(env, def.appName)
       const scroll = await automation.scroll({ index: initialBy('wheelarea'), direction: 'down', amount: 1, afterSeconds: 0.2 })
       const after = scroll.ok === true ? await waitForStatus(env, def.appName, status => status.wheelTicks === before.wheelTicks + 1) : before
@@ -156,7 +157,7 @@ async function runFixture(def) {
         detail: `wheelTicks ${before.wheelTicks} → ${after.wheelTicks} (${scroll.code || 'ok'})`,
       })
     }
-    report(def, 'scroll', scrollRows)
+    if (wanted.includes('scroll')) report(def, 'scroll', scrollRows)
 
     // ---- type ---------------------------------------------------------
     const typeRows = []
@@ -170,7 +171,7 @@ async function runFixture(def) {
         detail: `text=${JSON.stringify(text)} readback=${JSON.stringify(typed.readback?.actual ?? status.text)} (${typed.code || typed.channel})`,
       })
     }
-    report(def, 'type', typeRows)
+    if (wanted.includes('type')) report(def, 'type', typeRows)
     void latest
 
     return {
@@ -192,6 +193,12 @@ const defs = [
     key: 'panel_gtk3', label: 'GTK3 fixture', toolkit: 'gtk3',
     command: path.join(fixtureDir, 'panel_gtk3'), appName: 'panel_gtk3',
     names: { button: 'button', input: 'input' },
+  },
+  {
+    key: 'panel_gtk4', label: 'GTK4 fixture (X11-origin fallback)', toolkit: 'gtk4',
+    command: path.join(fixtureDir, 'panel_gtk4'), appName: 'panel_gtk4',
+    names: { button: '点击 Click', input: 'input' },
+    ops: ['screenshot', 'click', 'type'],
   },
 ]
 

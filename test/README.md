@@ -8,10 +8,10 @@ plugin is then pointed at that display (and bus) through its normal settings.
 |---|---|
 | `fixtures/panel_qt.cpp` | Qt 6 panel: click, double-click, drag, wheel, text, status label |
 | `fixtures/panel_gtk3.c` | same panel for GTK 3 |
-| `fixtures/panel_gtk4.c` | GTK 4 panel; its all-zero AT-SPI extents reproduce `E_NO_GEOMETRY` |
+| `fixtures/panel_gtk4.c` | GTK 4 panel; its all-zero AT-SPI extents exercise the X11-origin fallback (and `E_NO_GEOMETRY` when the fallback is disabled) |
 | `lib/env.mjs` | Xvfb + private D-Bus + fixture lifecycle, AT-SPI a11y switch |
 | `lib/checks.mjs` | PASS/FAIL collector, status parsing, index-stability helpers |
-| `integration.mjs` | numbered-image matrix, index errors, GTK4 guard, tool entry points |
+| `integration.mjs` | numbered-image matrix, index errors, GTK4 fallback (numbering, window move, pixel check, fallback-off), mixed Qt6+GTK3+GTK4 desktop, tool entry points |
 | `reliability.mjs` | 30 attempts per operation per fixture, with latency percentiles |
 | `capture-screenshots.mjs` | regenerates the curated images in `../screenshots/` |
 | `smoke.mjs` | one-fixture sanity run while developing |
