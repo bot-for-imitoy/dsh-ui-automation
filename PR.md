@@ -1,4 +1,4 @@
-Title: Add dsh-ui-automation 2.1.0 — numbered-image UI control for Linux, with GTK4 X11-origin fallback
+Title: Add dsh-ui-automation 2.2.0 — numbered-image UI control for Linux (GTK4 X11-origin fallback, visibility takeover)
 
 Body:
 
@@ -10,6 +10,10 @@ outlines onto a cropped PNG, and returns the image path plus an index list. The 
 by number only: `ui_click`, `ui_double_click`, `ui_scroll`, `ui_drag`, `ui_type`. Every action
 clicks the recorded rectangle's centre with XTEST, waits `afterSeconds`, captures the **next**
 numbered image, and returns it. Indices from the previous image are dead.
+
+Since 2.2.0 the plugin also exports `ctx.uiAutomationVisibility`: a wrapper plugin can take the six
+tools over for its own sessions (the wrapper's subagent still receives them), and disabling the
+wrapper restores the original surface. Installing this plugin alone behaves exactly like 2.1.0.
 
 The full surface is six tools:
 
