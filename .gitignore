@@ -24,3 +24,6 @@ core
 # publication state (machine-local)
 .publish-state.json
 PUBLISH.md
+
+# Python bytecode from maintainer test tools
+__pycache__/

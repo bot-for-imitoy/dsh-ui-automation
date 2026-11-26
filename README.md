@@ -230,6 +230,24 @@ to look at the frame.
 - No Wayland-native support; XWayland behaves like X11 only for what it exposes.
 - Linux only.
 
+## Publishing (maintainers)
+
+`publish.sh` publishes the repository and opens the awesome-list PR. The PR stage uses the GitHub
+REST API by default and never clones the list (the repo is ~600 MB and the proxy drops mid-clone):
+
+```bash
+./publish.sh --check                 # read-only: token, network, repo and fork state
+./publish.sh --pr-only --dry-run     # entry + blob/tree/commit shas; no ref, no PR
+./publish.sh --pr-only               # create/update the fork branch and open/reuse the PR
+./publish.sh --pr-only --clone       # legacy path: clone the fork and git push
+```
+
+It needs `GITHUB_TOKEN_FILE` (default `~/.dsh/github-token`) and the usual `http_proxy`/
+`https_proxy` variables. API requests retry network errors, 5xx and 429 up to
+`PUBLISH_RETRY_MAX` times with exponential backoff; other 4xx stop immediately and print the
+response body. Re-runs update the branch ref and reuse the open PR instead of opening a duplicate.
+Offline coverage for the whole path (mock API): `python3 test/publish-api.test.py`.
+
 ## Testing
 
 ```bash

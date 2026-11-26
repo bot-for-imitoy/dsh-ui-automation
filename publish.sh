@@ -10,10 +10,25 @@
 #   ./publish.sh --pr-only       fork/entry/PR only (repository already published)
 #   ./publish.sh --force-pr      ignore the "repository is 1 day old" gate
 #   ./publish.sh --category ID   override the awesome-list category (default: tools)
+#   ./publish.sh --api|--clone   API path (default) or legacy clone path for the PR
+#   ./publish.sh --dry-run       with --pr-only: compute the entry and create the
+#                                blob/tree/commit, but do not write refs or a PR
+#
+# The PR stage uses the GitHub REST API by default (--api): it creates a blob,
+# tree and commit on the fork and opens the PR without cloning the list. All
+# requests are small JSON and retried on network errors, so the flaky proxy does
+# not need a lucky 600 MB clone.
+#
+#   ./publish.sh --pr-only --dry-run   compute upstream base, entry blob/tree and
+#                                      commit sha; do not write refs or open a PR
+#   ./publish.sh --pr-only --clone     legacy path: clone the fork and git push
 #
 # Token: read from $GITHUB_TOKEN_FILE (default ~/.dsh/github-token). It is only
 # handed to curl through a 0600 netrc file and to git through a 0600 askpass
 # script; it is never placed in argv, config, logs or the repository.
+# Network retries: PUBLISH_RETRY_MAX (default 6), PUBLISH_RETRY_DELAY (2s),
+# PUBLISH_HTTP_TIMEOUT (45s). PUBLISH_API_BASE and PUBLISH_STATE_FILE exist for
+# offline tests of this script.
 
 set -euo pipefail
 umask 077
@@ -24,12 +39,19 @@ AWESOME_SLUG="awesome-dsh-plugin/awesome-dsh-plugin"
 TOKEN_FILE="${GITHUB_TOKEN_FILE:-$HOME/.dsh/github-token}"
 CATEGORY="${AWESOME_CATEGORY:-tools}"
 MODE="full"
+PR_MODE="api"
+DRY_RUN=0
 FORCE_PR=0
 MIN_COMMITS=10
 MIN_REPO_AGE_SECONDS=86400
+API_BASE="${PUBLISH_API_BASE:-https://api.github.com}"
+STATE_FILE="${PUBLISH_STATE_FILE:-$ROOT/.publish-state.json}"
+RETRY_MAX="${PUBLISH_RETRY_MAX:-6}"
+RETRY_DELAY="${PUBLISH_RETRY_DELAY:-2}"
+HTTP_TIMEOUT="${PUBLISH_HTTP_TIMEOUT:-45}"
 
 usage() {
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo pipefail/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
@@ -42,12 +64,20 @@ while [ $# -gt 0 ]; do
         --check) MODE="check"; shift ;;
         --repo-only) MODE="repo"; shift ;;
         --pr-only) MODE="pr"; shift ;;
+        --api) PR_MODE="api"; shift ;;
+        --clone) PR_MODE="clone"; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
         --force-pr) FORCE_PR=1; shift ;;
         --category) CATEGORY="${2:?--category needs a value}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    [ "$MODE" = "pr" ] || die "--dry-run is only supported with --pr-only (it must not create the repository or push)"
+    [ "$PR_MODE" = "api" ] || die "--dry-run requires the API path (drop --clone)"
+fi
 
 for tool in curl git python3; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
@@ -66,10 +96,17 @@ cleanup() { rm -rf -- "$TMP"; }
 trap cleanup EXIT
 
 # Netrc: curl authenticates with basic auth (any login, token as password).
+# The API host is included as well so PUBLISH_API_BASE can point at a local
+# mock server in the offline tests without putting the token in argv.
+API_HOST=$(python3 -c 'import sys, urllib.parse
+host = urllib.parse.urlparse(sys.argv[1]).hostname
+print(host or "api.github.com")' "$API_BASE")
 {
-    printf 'machine api.github.com\n  login x\n  password '
-    tr -d '\r\n' < "$TOKEN_FILE"
-    printf '\n'
+    for host in api.github.com "$API_HOST"; do
+        printf 'machine %s\n  login x\n  password ' "$host"
+        tr -d '\r\n' < "$TOKEN_FILE"
+        printf '\n'
+    done
 } > "$NETRC"
 chmod 600 "$NETRC"
 
@@ -88,21 +125,72 @@ export GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 GIT_TOKEN_FILE="$TOKEN_FILE"
 API_CODE=""
 API_BODY=""
 
+# One API request with retries for network errors, 5xx and 429. HTTP 4xx is a
+# caller problem and is returned as-is; callers use require_code/api_error to
+# fail with the response body instead of retrying.
 api() {
     local method="$1" path="$2" body="${3:-}"
-    local args=(-sS --netrc-file "$NETRC" -X "$method"
-        -H 'Accept: application/vnd.github+json'
-        -H 'X-GitHub-Api-Version: 2022-11-28'
-        -H 'Content-Type: application/json'
-        -o "$RESP_FILE" -w '%{http_code}')
-    if [ -n "$body" ]; then
-        API_CODE=$(curl "${args[@]}" --data "$body" "https://api.github.com$path") \
-            || die "curl failed: $method $path"
-    else
-        API_CODE=$(curl "${args[@]}" "https://api.github.com$path") \
-            || die "curl failed: $method $path"
-    fi
-    API_BODY=$(cat "$RESP_FILE" 2>/dev/null || true)
+    local attempt=1 delay="$RETRY_DELAY" rc code
+    while :; do
+        local args=(-sS -m "$HTTP_TIMEOUT" --netrc-file "$NETRC" -X "$method"
+            -H 'Accept: application/vnd.github+json'
+            -H 'X-GitHub-Api-Version: 2022-11-28'
+            -H 'Content-Type: application/json'
+            -o "$RESP_FILE" -w '%{http_code}')
+        rc=0
+        if [ -n "$body" ]; then
+            if [ "${body#@}" != "$body" ]; then
+                code=$(curl "${args[@]}" --data-binary "@${body#@}" "$API_BASE$path" 2>"$TMP/curlerr") || rc=$?
+            else
+                code=$(curl "${args[@]}" --data "$body" "$API_BASE$path" 2>"$TMP/curlerr") || rc=$?
+            fi
+        else
+            code=$(curl "${args[@]}" "$API_BASE$path" 2>"$TMP/curlerr") || rc=$?
+        fi
+        API_CODE="${code:-000}"
+        API_BODY=$(cat "$RESP_FILE" 2>/dev/null || true)
+        local retriable=0
+        if [ "$rc" -ne 0 ] || [ "$API_CODE" = "000" ] || [ "${API_CODE:0:1}" = "5" ] \
+            || [ "$API_CODE" = "429" ]; then
+            retriable=1
+        fi
+        [ "$retriable" -eq 0 ] && return 0
+        if [ "$attempt" -ge "$RETRY_MAX" ]; then
+            die "network error on $method $path after $attempt attempts (curl rc=$rc, HTTP $API_CODE): $(tr -d '\r\n' < "$TMP/curlerr" 2>/dev/null | tail -c 300)"
+        fi
+        warn "network error on $method $path (curl rc=$rc, HTTP $API_CODE); retry $attempt/$RETRY_MAX in ${delay}s"
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+        [ "$delay" -gt 30 ] && delay=30
+    done
+}
+
+# Human-readable error detail for the last response (message / errors / raw).
+api_error() {
+    python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+    message = data.get("message") or ""
+    errors = data.get("errors")
+    if errors:
+        message = f"{message} {errors}" if message else str(errors)
+    print((message or raw)[:500])
+except Exception:
+    print(raw[:500])
+' <<<"$API_BODY" 2>/dev/null || true
+}
+
+# Fail unless the last HTTP status is one of the accepted ones.
+require_code() {
+    local desc="$1"; shift
+    local code
+    for code in "$@"; do
+        [ "$API_CODE" = "$code" ] && return 0
+    done
+    die "$desc failed (HTTP $API_CODE): $(api_error)"
 }
 
 # Read a dotted field out of the last API response.
@@ -121,7 +209,7 @@ print("" if d is None else d)
 git_cred() { git -c credential.helper= "$@"; }
 
 write_state() {
-    python3 - "$ROOT/.publish-state.json" "$OWNER" "$REPO_URL" "${PR_URL:-}" "$CATEGORY" <<'PY'
+    python3 - "$STATE_FILE" "$OWNER" "$REPO_URL" "${PR_URL:-}" "$CATEGORY" <<'PY'
 import datetime, json, sys
 path, owner, repo_url, pr_url, category = sys.argv[1:6]
 state = {
@@ -137,13 +225,319 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 }
 
+# ---------------------------------------------------------------- entry helpers
+# Render the local awesome-entry.yml for the authenticated owner.
+render_entry() {
+    local out="$1"
+    sed "s/__OWNER__/$OWNER/g" "$ROOT/awesome-entry.yml" > "$out"
+}
+
+# Same validation as the clone path: url/name, category present, and a
+# single-line description.en that ends with a period.
+validate_entry() {
+    python3 - "$1" "$OWNER" "$REPO_NAME" <<'ENTRY_PY'
+import re
+import sys
+
+path, owner, repo = sys.argv[1:4]
+text = open(path, encoding="utf-8").read()
+
+def scalar(key):
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(.+?)[ \t]*$", text, re.M)
+    value = match.group(1).strip() if match else ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
+        value = value[1:-1]
+    return value
+
+url = scalar("url")
+name = scalar("name")
+category = scalar("category")
+match = re.search(r"^[ \t]+en:[ \t]*(.+?)[ \t]*$", text, re.M)
+en = match.group(1).rstrip() if match else ""
+if len(en) >= 2 and en[0] == en[-1] and en[0] in ("\"", "'"):
+    en = en[1:-1]
+
+problems = []
+expected = f"https://github.com/{owner}/{repo}"
+if url != expected:
+    problems.append(f"url must be {expected} (got {url!r})")
+if name != f"{owner}/{repo}":
+    problems.append(f"name must be {owner}/{repo} (got {name!r})")
+if not category:
+    problems.append("category is missing")
+if en == "":
+    problems.append("description.en is missing")
+elif not en.endswith("."):
+    problems.append("description.en must end with a period")
+if problems:
+    print("\u2717 entry validation failed:")
+    for problem in problems:
+        print(f"  - {problem}")
+    raise SystemExit(1)
+print("\u2713 entry validated (url, name, category, single-line description.en)")
+ENTRY_PY
+}
+
+# The list has no data/categories.yml; contributing.md carries the canonical
+# list. Fetch it through the API so the API path can verify the category without
+# cloning, with the same list as a fallback when the document is unreachable.
+BUILTIN_CATEGORIES="agi ui usage theme model identity session memory tools wsl browser vision voice docs skill workflow git notify dev security remote market fun"
+
+validate_category_api() {
+    local category="$1"
+    local doc="$TMP/contributing.md"
+    local fetched=0
+    local file
+    for file in contributing.md CONTRIBUTING.md Contributing.md; do
+        api GET "/repos/$AWESOME_SLUG/contents/$file"
+        if [ "$API_CODE" = "200" ]; then
+            printf '%s' "$API_BODY" > "$TMP/contributing.json"
+            if python3 - "$doc" "$TMP/contributing.json" <<'CAT_PY'
+import base64, json, sys
+data = json.load(open(sys.argv[2], encoding="utf-8"))
+text = base64.b64decode(data.get("content", "")).decode("utf-8", "replace")
+open(sys.argv[1], "w", encoding="utf-8").write(text)
+CAT_PY
+            then
+                fetched=1
+                break
+            fi
+        fi
+    done
+    local valid="$BUILTIN_CATEGORIES"
+    local category_source="built-in list"
+    if [ "$fetched" -eq 1 ]; then
+        local parsed
+        parsed=$(python3 - "$doc" <<'PARSE_PY' || true
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"Valid `category` values[^\n]*\n+([^\n]+)", text)
+line = match.group(1) if match else ""
+cats = re.findall(r"`([a-z0-9_-]+)`", line)
+if not cats:
+    match = re.search(r"`category`[^\n]*\n+([^\n]+)", text)
+    cats = re.findall(r"`([a-z0-9_-]+)`", match.group(1)) if match else []
+print(" ".join(cats))
+PARSE_PY
+)
+        if [ -n "$parsed" ]; then
+            valid="$parsed"
+            category_source="contributing.md"
+        else
+            warn "could not parse the category list from contributing.md; using the built-in list"
+        fi
+    else
+        warn "could not fetch contributing.md; validating against the built-in category list"
+    fi
+    case " $valid " in
+        *" $category "*) ;;
+        *) die "category '$category' is not in the official list; pick one of: $valid" ;;
+    esac
+    ok "category '$category' is valid (from $category_source)"
+}
+
+# ---------------------------------------------------------------- API PR path
+# Create blob -> tree -> commit on the fork through the REST API, update the
+# branch ref, and open (or reuse) the pull request. No clone, no git push.
+api_pr() {
+    local fork="$OWNER/awesome-dsh-plugin"
+    local branch="add-$REPO_NAME"
+    local base_branch base_sha base_tree
+    local entry_path entry_file
+    local title body payload blob_sha tree_sha commit_sha
+
+    # --- base: upstream ref (main, then master) -------------------------
+    api GET "/repos/$AWESOME_SLUG/git/ref/heads/main"
+    if [ "$API_CODE" = "200" ]; then
+        base_branch="main"
+    elif [ "$API_CODE" = "404" ]; then
+        api GET "/repos/$AWESOME_SLUG/git/ref/heads/master"
+        require_code "locating upstream default branch (main/master)" 200
+        base_branch="master"
+    else
+        require_code "locating upstream default branch" 200
+    fi
+    base_sha=$(jget object.sha)
+    [ -n "$base_sha" ] || die "upstream ref has no commit sha"
+    info "upstream $AWESOME_SLUG@$base_branch: $base_sha"
+
+    api GET "/repos/$AWESOME_SLUG/git/commits/$base_sha"
+    require_code "reading upstream commit" 200
+    base_tree=$(jget tree.sha)
+    [ -n "$base_tree" ] || die "upstream commit has no tree sha"
+    info "base tree: $base_tree"
+
+    # --- entry ----------------------------------------------------------
+    entry_path="data/plugins/${OWNER}__${REPO_NAME}.yml"
+    entry_file="$TMP/entry.yml"
+    render_entry "$entry_file"
+    validate_entry "$entry_file"
+    validate_category_api "$CATEGORY"
+    ok "entry: $entry_path ($(wc -c < "$entry_file") bytes)"
+
+    # --- blob -----------------------------------------------------------
+    payload="$TMP/blob.json"
+    python3 - "$entry_file" "$payload" <<'BLOB_PY'
+import json, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+json.dump({"content": text, "encoding": "utf-8"},
+          open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+BLOB_PY
+    api POST "/repos/$fork/git/blobs" "@$payload"
+    require_code "creating blob on the fork" 201 200
+    blob_sha=$(jget sha)
+    [ -n "$blob_sha" ] || die "blob response has no sha"
+    ok "blob: $blob_sha"
+
+    # --- tree -----------------------------------------------------------
+    payload="$TMP/tree.json"
+    python3 - "$base_tree" "$entry_path" "$blob_sha" "$payload" <<'TREE_PY'
+import json, sys
+base_tree, path, blob, out = sys.argv[1:5]
+json.dump({
+    "base_tree": base_tree,
+    "tree": [{"path": path, "mode": "100644", "type": "blob", "sha": blob}],
+}, open(out, "w", encoding="utf-8"), ensure_ascii=False)
+TREE_PY
+    api POST "/repos/$fork/git/trees" "@$payload"
+    require_code "creating tree on the fork" 201 200
+    tree_sha=$(jget sha)
+    [ -n "$tree_sha" ] || die "tree response has no sha"
+    ok "tree: $tree_sha"
+
+    # --- commit ---------------------------------------------------------
+    title=$(sed -n 's/^Title:[[:space:]]*//p' "$ROOT/PR.md" | head -n 1)
+    body=$(sed -n '/^Body:/,$p' "$ROOT/PR.md" | tail -n +2)
+    [ -n "$title" ] || die "PR.md has no 'Title:' line"
+    payload="$TMP/commit.json"
+    python3 - "$title" "$tree_sha" "$base_sha" "$payload" <<'COMMIT_PY'
+import json, sys
+title, tree, parent, out = sys.argv[1:5]
+json.dump({
+    "message": title,
+    "tree": tree,
+    "parents": [parent],
+}, open(out, "w", encoding="utf-8"), ensure_ascii=False)
+COMMIT_PY
+    api POST "/repos/$fork/git/commits" "@$payload"
+    require_code "creating commit on the fork" 201 200
+    commit_sha=$(jget sha)
+    [ -n "$commit_sha" ] || die "commit response has no sha"
+    ok "commit: $commit_sha"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '\n'
+        ok "dry-run: nothing was written to refs or pull requests"
+        info "entry:   $entry_path"
+        info "base:    $base_sha (tree $base_tree, branch $base_branch)"
+        info "blob:    $blob_sha"
+        info "tree:    $tree_sha"
+        info "commit:  $commit_sha"
+        info "next:    drop --dry-run to create refs/heads/$branch and open the PR"
+        info "note:    the blob/tree/commit objects are dangling until the ref is written"
+        exit 0
+    fi
+
+    # --- branch ref (create, or force-update when it already exists) -----
+    api GET "/repos/$fork/git/ref/heads/$branch"
+    case "$API_CODE" in
+        200)
+            payload="$TMP/ref.json"
+            python3 - "$commit_sha" "$payload" <<'REF_PY'
+import json, sys
+json.dump({"sha": sys.argv[1], "force": True}, open(sys.argv[2], "w", encoding="utf-8"))
+REF_PY
+            api PATCH "/repos/$fork/git/refs/heads/$branch" "@$payload"
+            require_code "updating fork branch $branch" 200
+            ok "branch $branch updated to $commit_sha"
+            ;;
+        404)
+            payload="$TMP/ref.json"
+            python3 - "$branch" "$commit_sha" "$payload" <<'REF_PY'
+import json, sys
+json.dump({"ref": f"refs/heads/{sys.argv[1]}", "sha": sys.argv[2]},
+          open(sys.argv[3], "w", encoding="utf-8"))
+REF_PY
+            api POST "/repos/$fork/git/refs" "@$payload"
+            if [ "$API_CODE" = "422" ]; then
+                python3 - "$commit_sha" "$payload" <<'REF_PY'
+import json, sys
+json.dump({"sha": sys.argv[1], "force": True}, open(sys.argv[2], "w", encoding="utf-8"))
+REF_PY
+                api PATCH "/repos/$fork/git/refs/heads/$branch" "@$payload"
+                require_code "updating fork branch $branch after 422" 200
+                ok "branch $branch updated to $commit_sha"
+            else
+                require_code "creating fork branch $branch" 201
+                ok "branch $branch created at $commit_sha"
+            fi
+            ;;
+        *)
+            require_code "inspecting fork branch $branch" 200 404
+            ;;
+    esac
+
+    # --- pull request: reuse an open one, otherwise create ---------------
+    local head_query
+    head_query=$(python3 -c 'import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1], safe=""))' "$OWNER:$branch")
+    api GET "/repos/$AWESOME_SLUG/pulls?state=open&head=$head_query"
+    require_code "checking for an existing pull request" 200
+    PR_URL=$(python3 -c '
+import json, sys
+pulls = json.load(sys.stdin)
+print(pulls[0]["html_url"] if pulls else "")' <<<"$API_BODY" 2>/dev/null || true)
+
+    if [ -n "${PR_URL:-}" ]; then
+        ok "open pull request already exists: $PR_URL"
+    else
+        info "opening pull request against $AWESOME_SLUG ($base_branch)"
+        payload="$TMP/pr.json"
+        python3 - "$title" "$body" "$OWNER" "$branch" "$base_branch" "$payload" <<'PR_PY'
+import json, sys
+title, body, owner, branch, base, out = sys.argv[1:7]
+json.dump({
+    "title": title,
+    "head": f"{owner}:{branch}",
+    "base": base,
+    "body": body,
+    "maintainer_can_modify": True,
+}, open(out, "w", encoding="utf-8"), ensure_ascii=False)
+PR_PY
+        api POST "/repos/$AWESOME_SLUG/pulls" "@$payload"
+        if [ "$API_CODE" = "422" ]; then
+            # Keep the 422 body before the re-check overwrites API_BODY.
+            local pr_error
+            pr_error=$(api_error)
+            api GET "/repos/$AWESOME_SLUG/pulls?state=open&head=$head_query"
+            PR_URL=$(python3 -c '
+import json, sys
+pulls = json.load(sys.stdin)
+print(pulls[0]["html_url"] if pulls else "")' <<<"$API_BODY" 2>/dev/null || true)
+            [ -n "${PR_URL:-}" ] || die "opening the PR failed (HTTP 422): $pr_error"
+            ok "open pull request already exists: $PR_URL"
+        else
+            require_code "opening the pull request" 201
+            PR_URL=$(jget html_url)
+            ok "pull request opened: $PR_URL"
+        fi
+    fi
+
+    write_state
+    printf '\n'
+    info "done."
+    info "repository: $REPO_URL"
+    info "pull request: ${PR_URL:-none}"
+    info "state: $STATE_FILE"
+}
+
 # ---------------------------------------------------------------- preflight
 info "token file: $TOKEN_FILE"
-NET_CODE=$(curl -m 12 -sS -o /dev/null -w '%{http_code}' https://api.github.com/ 2>/dev/null || true)
+NET_CODE=$(curl -m 20 -sS -o /dev/null -w '%{http_code}' "$API_BASE/" 2>/dev/null || true)
 case "$NET_CODE" in
     200|401|403) ok "api.github.com reachable (HTTP $NET_CODE)" ;;
     *)
-        die "api.github.com is not reachable (got '$NET_CODE').
+        die "$API_BASE is not reachable (got '$NET_CODE').
   This machine currently cannot reach GitHub (TLS handshake aborted). Nothing
   was changed. Re-run this script when the network is back; all repository and
   entry work is already done offline. See PUBLISH.md."
@@ -155,7 +549,24 @@ api GET /user
 OWNER=$(jget login)
 [ -n "$OWNER" ] || die "could not determine the token owner"
 REPO_URL="https://github.com/$OWNER/$REPO_NAME"
-ok "authenticated as $OWNER (token scope: $(jget scopes 2>/dev/null || echo 'unknown'))"
+ok "authenticated as $OWNER"
+
+if [ "$MODE" = "check" ]; then
+    api GET "/repos/$OWNER/$REPO_NAME"
+    case "$API_CODE" in
+        200) ok "repository exists: https://github.com/$OWNER/$REPO_NAME" ;;
+        404) info "repository not created yet: $OWNER/$REPO_NAME" ;;
+        *) require_code "checking the repository" 200 404 ;;
+    esac
+    api GET "/repos/$OWNER/awesome-dsh-plugin"
+    case "$API_CODE" in
+        200) ok "awesome-list fork exists: https://github.com/$OWNER/awesome-dsh-plugin" ;;
+        404) info "awesome-list fork not created yet" ;;
+        *) require_code "checking the fork" 200 404 ;;
+    esac
+    ok "check complete (read-only)"
+    exit 0
+fi
 
 cd "$ROOT"
 
@@ -264,6 +675,11 @@ for _ in $(seq 1 30); do
 done
 [ "$API_CODE" = "200" ] || die "fork did not become available in 60s"
 
+if [ "$PR_MODE" = "api" ]; then
+    api_pr
+    exit 0
+fi
+
 WORK="$TMP/awesome"
 info "cloning fork"
 git_cred clone --quiet "https://github.com/$FORK_REPO.git" "$WORK" || die "fork clone failed"
@@ -302,53 +718,9 @@ fi
 ENTRY_DIR="data/plugins"
 mkdir -p "$ENTRY_DIR"
 ENTRY_FILE="$ENTRY_DIR/${OWNER}__${REPO_NAME}.yml"
-sed "s/__OWNER__/$OWNER/g" "$ROOT/awesome-entry.yml" > "$ENTRY_FILE"
+render_entry "$ENTRY_FILE"
 ok "wrote $ENTRY_FILE"
-
-# Validate the entry before committing: url must match, name/category must be
-# present, and description.en must be one physical line ending with a period.
-# Deliberately dependency-free: a tiny line parser instead of requiring PyYAML.
-python3 - "$ENTRY_FILE" "$OWNER" "$REPO_NAME" <<'PY'
-import re
-import sys
-
-path, owner, repo = sys.argv[1:4]
-text = open(path, encoding="utf-8").read()
-
-def scalar(key):
-    match = re.search(rf"^{re.escape(key)}:[ \t]*(.+?)[ \t]*$", text, re.M)
-    value = match.group(1).strip() if match else ""
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("\"", "'"):
-        value = value[1:-1]
-    return value
-
-url = scalar("url")
-name = scalar("name")
-category = scalar("category")
-match = re.search(r"^[ \t]+en:[ \t]*(.+?)[ \t]*$", text, re.M)
-en = match.group(1).rstrip() if match else ""
-if len(en) >= 2 and en[0] == en[-1] and en[0] in ("\"", "'"):
-    en = en[1:-1]
-
-problems = []
-expected = f"https://github.com/{owner}/{repo}"
-if url != expected:
-    problems.append(f"url must be {expected} (got {url!r})")
-if name != f"{owner}/{repo}":
-    problems.append(f"name must be {owner}/{repo} (got {name!r})")
-if not category:
-    problems.append("category is missing")
-if en == "":
-    problems.append("description.en is missing")
-elif not en.endswith("."):
-    problems.append("description.en must end with a period")
-if problems:
-    print("\u2717 entry validation failed:")
-    for problem in problems:
-        print(f"  - {problem}")
-    raise SystemExit(1)
-print("\u2713 entry validated (url, name, category, single-line description.en)")
-PY
+validate_entry "$ENTRY_FILE"
 
 # If the list repository ships a generator for its READMEs, run it: the two
 # READMEs must not be edited by hand.

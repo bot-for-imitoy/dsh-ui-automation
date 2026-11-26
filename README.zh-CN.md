@@ -194,6 +194,23 @@ PNG 还会经 `saveImage()` 保存并以 `image` content block 返回；如果�
 - 不原生支持 Wayland；XWayland 只按它暴露的 X11 能力工作。
 - 仅 Linux。
 
+## 发布（维护者）
+
+`publish.sh` 用于发布仓库并开 awesome-list PR。PR 阶段默认走 GitHub REST API，不会 clone 那个
+约 600MB 的列表仓库（代理经常在 clone 中途断开）：
+
+```bash
+./publish.sh --check                 # 只读：token、网络、仓库与 fork 状态
+./publish.sh --pr-only --dry-run     # 渲染条目并计算 blob/tree/commit sha；不写 ref、不开 PR
+./publish.sh --pr-only               # 创建/更新 fork 分支，开 PR 或复用已开的 PR
+./publish.sh --pr-only --clone       # 旧路径：clone fork 后 git push
+```
+
+需要 `GITHUB_TOKEN_FILE`（默认 `~/.dsh/github-token`）以及 `http_proxy`/`https_proxy`。API 请求对
+网络错误、5xx、429 按指数退避最多重试 `PUBLISH_RETRY_MAX` 次；其它 4xx 立即停止并打印响应体。
+重跑会更新分支 ref 并复用已开的 PR，不会重复开 PR。整条路径的离线测试（mock API）：
+`python3 test/publish-api.test.py`。
+
 ## 测试
 
 ```bash
